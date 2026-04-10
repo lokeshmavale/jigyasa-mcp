@@ -53,8 +53,18 @@ def index_cli(repo: str, endpoint: str, incremental: bool, embeddings: bool, sta
 @click.option("--repo", default="", help="Repository root for context lookups and reindexing")
 @click.option("--embeddings", is_flag=True, help="Enable hybrid search with local embeddings")
 @click.option("--self-test", "run_self_test", is_flag=True, help="Run connectivity self-test and exit")
-def mcp_cli(endpoint: str, repo: str, embeddings: bool, run_self_test: bool):
+@click.option("--auto-start", is_flag=True, help="Auto-start Jigyasa server if not running")
+def mcp_cli(endpoint: str, repo: str, embeddings: bool, run_self_test: bool, auto_start: bool):
     """Start the Jigyasa MCP server for GitHub Copilot CLI integration."""
+    if auto_start:
+        from jigyasa_mcp.jigyasa_launcher import is_running, start
+        port = int(endpoint.split(":")[-1]) if ":" in endpoint else 50051
+        if not is_running(port):
+            click.echo(f"Jigyasa not running — auto-starting on port {port}...", err=True)
+            if not start(port=port):
+                click.echo("ERROR: Failed to auto-start Jigyasa", err=True)
+                sys.exit(1)
+
     if run_self_test:
         from jigyasa_mcp.server.mcp_server import self_test
         click.echo(f"Running self-test against {endpoint}...")
@@ -68,6 +78,35 @@ def mcp_cli(endpoint: str, repo: str, embeddings: bool, run_self_test: bool):
     from jigyasa_mcp.server.mcp_server import run_server
     click.echo(f"Starting Jigyasa MCP server (endpoint={endpoint}, repo={repo})", err=True)
     asyncio.run(run_server(endpoint, repo, embeddings))
+
+
+@click.command("jigyasa-server")
+@click.option("--port", default=50051, help="gRPC port")
+@click.option("--heap-min", default="512m", help="JVM min heap")
+@click.option("--heap-max", default="1g", help="JVM max heap")
+@click.option("--jar", default="", help="Path to Jigyasa fat JAR")
+@click.option("--stop", "do_stop", is_flag=True, help="Stop the running server")
+@click.option("--status", "do_status", is_flag=True, help="Show server status")
+def server_cli(port: int, heap_min: str, heap_max: str, jar: str, do_stop: bool, do_status: bool):
+    """Manage the Jigyasa search engine server."""
+    import json
+    from jigyasa_mcp.jigyasa_launcher import start, stop, status
+
+    if do_status:
+        print(json.dumps(status(port), indent=2))
+        return
+
+    if do_stop:
+        stop()
+        return
+
+    if start(port=port, heap_min=heap_min, heap_max=heap_max, jar_path=jar):
+        st = status(port)
+        print(f"Jigyasa running: port={port}, PID={st['pid']}")
+        print(f"  Index data: {st['index_dir']} ({st['index_size_mb']}MB)")
+    else:
+        print("Failed to start Jigyasa", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -8,34 +8,44 @@ Sets up the full Jigyasa MCP code search pipeline for any Git repository. Handle
 - User wants to make a new codebase searchable via AI agents
 - User wants to add another repo to an existing Jigyasa setup
 
-## Prerequisites check
-Before starting, verify these are available. If any are missing, guide the user to install them.
+## Step 0: Preflight check (MUST DO FIRST)
 
-1. **Python 3.10+**: `python --version`
-2. **Java 21+**: `java -version` (needed for Jigyasa server)
-3. **Git**: `git --version`
-4. **jigyasa-mcp package**: `pip show jigyasa-mcp` (may need install)
-5. **Jigyasa JAR**: Check if built or available
+Run all checks in a single pass. Auto-fix everything possible. Only ask the user for things you genuinely can't determine.
 
-## Setup procedure
+**Jigyasa source repo:** `https://github.com/lokeshmavale/jigyasa`
 
-### Step 1: Identify the target repo
-
-Ask the user which repository to index. Get the absolute path. If they say "this repo", use the current working directory and find the git root:
 ```powershell
-git rev-parse --show-toplevel
+# Run all at once
+python --version && java -version && git --version && pip show jigyasa-mcp 2>$null
 ```
 
-Derive the repo name for collection namespacing:
-```python
-import os, re
-repo_root = r"<path>"
-name = os.path.basename(os.path.abspath(repo_root))
-prefix = re.sub(r"[^a-z0-9]", "_", name.lower()).strip("_")
-# e.g., "OpenSearch" → "opensearch", "my-cool-project" → "my_cool_project"
+**Decision table — check each row, auto-fix before asking:**
+
+| Check | Command | If missing → Auto-fix |
+|-------|---------|----------------------|
+| Python 3.10+ | `python --version` | Stop. Tell user to install Python 3.10+. |
+| Java 21+ | `java -version` | Stop. Tell user to install Java 21+. |
+| Git | `git --version` | Stop. Tell user to install Git. |
+| Jigyasa repo cloned | Look for `jigyasa` dir in `~/.jigyasa-mcp/` or common paths | Auto-fix: `git clone https://github.com/lokeshmavale/jigyasa ~/.jigyasa-mcp/jigyasa` |
+| Jigyasa JAR built | Find `*Jigyasa*all*.jar` in cloned repo's `build/libs/` | Auto-fix: `cd <jigyasa-repo> && gradlew shadowJar --quiet` |
+| jigyasa-mcp installed | `pip show jigyasa-mcp` | Auto-fix: `pip install -e C:\engram\jigyasa-mcp\jigyasa-mcp` (or wherever the package lives) |
+| gRPC stubs generated | Check `dpSearch_pb2.py` exists | Auto-fix: `python build_proto.py --proto-dir <jigyasa-repo>/src/main/proto` |
+
+**Then ask exactly 2 user questions** (skip any already known from CWD):
+
+1. **Which repo to index?** → ask_user with choices: `["This repo ({CWD})", "Let me provide a path"]`
+2. **Embeddings?** → ask_user with choices: `["No — BM25 only (Recommended, faster)", "Yes — add semantic search (90MB model)"]`
+
+MCP config location is auto-detected: if `.vscode/` exists in the target repo, offer VS Code config; otherwise default to Copilot CLI config.
+
+**Persist** collected paths so next run skips everything:
+```powershell
+[Environment]::SetEnvironmentVariable("JIGYASA_JAR", "<path>", "User")
 ```
 
-### Step 2: Install jigyasa-mcp
+## Setup procedure (run AFTER Step 0 passes all checks)
+
+### Step 1: Install jigyasa-mcp
 
 ```powershell
 pip install -e C:\engram\jigyasa-mcp\jigyasa-mcp
@@ -48,40 +58,39 @@ cd C:\engram\jigyasa-mcp\jigyasa-mcp
 python build_proto.py --proto-dir C:\azs\repos\jigyasa\src\main\proto
 ```
 
-### Step 3: Build and start Jigyasa server
+### Step 2: Build and start Jigyasa server
 
 Check if Jigyasa is already running:
 ```powershell
 python -c "from jigyasa_mcp.grpc_client import JigyasaClient; c = JigyasaClient(); print(c.health())"
 ```
 
-If not running, build and start:
+If not running, build and start using the launcher (stores data in `~/.jigyasa-mcp/data/`):
 ```powershell
+# Build JAR (one-time)
 cd C:\azs\repos\jigyasa
 .\gradlew.bat shadowJar --quiet
-# Start in background (detached)
-Start-Process java -ArgumentList '--add-modules','jdk.incubator.vector','-Xms512m','-Xmx1g','-jar','build\libs\Jigyasa-1.0-SNAPSHOT-all.jar' -WindowStyle Hidden
+
+# Start via launcher — handles data dirs, env vars, PID tracking
+jigyasa-server
+# Or with custom settings:
+jigyasa-server --port 50051 --heap-max 2g --jar C:\path\to\Jigyasa-all.jar
 ```
 
-Wait for it to be ready:
+The launcher automatically:
+- Creates `~/.jigyasa-mcp/data/IndexData/` for Lucene indexes
+- Creates `~/.jigyasa-mcp/data/TransLog/` for write-ahead logs
+- Sets `INDEX_CACHE_DIR`, `TRANSLOG_DIRECTORY`, `GRPC_SERVER_PORT` env vars
+- Saves PID to `~/.jigyasa-mcp/jigyasa.pid`
+- Polls until healthy (max 20s)
+
+Check status or stop:
 ```powershell
-# Poll until healthy (max 15 seconds)
-python -c "
-import time
-from jigyasa_mcp.grpc_client import JigyasaClient
-client = JigyasaClient()
-for i in range(15):
-    try:
-        h = client.health()
-        if h['status'] == 'SERVING': print('Jigyasa ready'); break
-    except: pass
-    time.sleep(1)
-else:
-    print('ERROR: Jigyasa did not start')
-"
+jigyasa-server --status    # shows running, port, PID, index size
+jigyasa-server --stop      # stops the server
 ```
 
-### Step 4: Run self-test
+### Step 3: Run self-test
 
 ```powershell
 jigyasa-mcp --self-test
@@ -89,7 +98,7 @@ jigyasa-mcp --self-test
 
 Expected output: `SELF-TEST PASSED: MCP ↔ Jigyasa connectivity OK`
 
-### Step 5: Index the repository
+### Step 4: Index the repository
 
 For a **first-time full index**:
 ```powershell
@@ -115,7 +124,7 @@ Full index complete:
   Time: 92.3s
 ```
 
-### Step 6: Register the repo
+### Step 5: Register the repo
 
 ```python
 from jigyasa_mcp.registry import RepoRegistry
@@ -128,7 +137,7 @@ registry.register(
 print("Registered repos:", [(e.root, e.prefix) for e in registry.list_repos()])
 ```
 
-### Step 7: Install git hooks for auto-indexing
+### Step 6: Install git hooks for auto-indexing
 
 **Windows:**
 ```powershell
@@ -149,7 +158,7 @@ for hook in post-commit post-merge post-checkout; do
 done
 ```
 
-### Step 8: Configure MCP server for Copilot CLI
+### Step 7: Configure MCP server for Copilot CLI
 
 Add to the user's MCP configuration (location depends on the IDE/CLI):
 
@@ -161,12 +170,15 @@ For **GitHub Copilot CLI** (`~/.config/github-copilot/mcp.json` or equivalent):
       "command": "jigyasa-mcp",
       "args": [
         "--endpoint", "localhost:50051",
-        "--repo", "<REPO_PATH>"
+        "--repo", "<REPO_PATH>",
+        "--auto-start"
       ]
     }
   }
 }
 ```
+
+The `--auto-start` flag makes the MCP server automatically start Jigyasa if it's not running — zero manual steps after initial setup.
 
 For **VS Code Copilot** (`.vscode/mcp.json` in the workspace):
 ```json
@@ -176,14 +188,15 @@ For **VS Code Copilot** (`.vscode/mcp.json` in the workspace):
       "command": "jigyasa-mcp",
       "args": [
         "--endpoint", "localhost:50051",
-        "--repo", "${workspaceFolder}"
+        "--repo", "${workspaceFolder}",
+        "--auto-start"
       ]
     }
   }
 }
 ```
 
-### Step 9: Verify end-to-end
+### Step 8: Verify end-to-end
 
 After MCP is configured, test by asking Copilot:
 - "Search for classes that implement ActionFilter" → should use `jigyasa_search_symbols`

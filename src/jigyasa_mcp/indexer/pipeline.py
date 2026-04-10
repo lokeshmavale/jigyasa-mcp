@@ -4,7 +4,6 @@ import json
 import logging
 import os
 import subprocess
-import sys
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field, asdict
@@ -40,47 +39,33 @@ LOCK_FILE = "index.lock"
 
 @contextmanager
 def _file_lock(repo_root: str):
-    """Cross-platform file lock to prevent concurrent index operations."""
+    """Simple PID-based lock to prevent concurrent index operations."""
     lock_path = os.path.join(repo_root, STATE_DIR, LOCK_FILE)
     os.makedirs(os.path.dirname(lock_path), exist_ok=True)
 
-    if sys.platform == "win32":
-        import msvcrt
-        lock_fh = open(lock_path, "w")
+    # Check if another process holds the lock
+    if os.path.exists(lock_path):
         try:
-            msvcrt.locking(lock_fh.fileno(), msvcrt.LK_NBLCK, 1)
+            with open(lock_path) as f:
+                old_pid = int(f.read().strip())
+            # Check if that process is still alive
+            os.kill(old_pid, 0)  # signal 0 = existence check
+            raise RuntimeError(
+                f"Another indexing process is already running (PID {old_pid})"
+            )
+        except (ValueError, OSError):
+            pass  # PID invalid or process dead — stale lock, safe to take
+
+    # Write our PID
+    with open(lock_path, "w") as f:
+        f.write(str(os.getpid()))
+    try:
+        yield
+    finally:
+        try:
+            os.remove(lock_path)
         except OSError:
-            lock_fh.close()
-            raise RuntimeError("Another indexing process is already running")
-        try:
-            yield
-        finally:
-            try:
-                msvcrt.locking(lock_fh.fileno(), msvcrt.LK_UNLCK, 1)
-            except OSError:
-                pass
-            lock_fh.close()
-            try:
-                os.remove(lock_path)
-            except OSError:
-                pass
-    else:
-        import fcntl
-        lock_fh = open(lock_path, "w")
-        try:
-            fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            lock_fh.close()
-            raise RuntimeError("Another indexing process is already running")
-        try:
-            yield
-        finally:
-            fcntl.flock(lock_fh, fcntl.LOCK_UN)
-            lock_fh.close()
-            try:
-                os.remove(lock_path)
-            except OSError:
-                pass
+            pass
 
 
 @dataclass

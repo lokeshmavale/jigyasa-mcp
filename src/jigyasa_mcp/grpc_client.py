@@ -198,7 +198,7 @@ class JigyasaClient:
         ) from last_error
 
     def health(self) -> dict:
-        _load_stubs()
+        self._ensure_connected()
         resp = self._call("Health", _pb2.HealthRequest())
         return {
             "status": "SERVING" if resp.status == 0 else "NOT_SERVING",
@@ -215,7 +215,6 @@ class JigyasaClient:
         }
 
     def create_collection(self, name: str, schema_json: str):
-        _load_stubs()
         self._call(
             "CreateCollection",
             _pb2.CreateCollectionRequest(collection=name, indexSchema=schema_json),
@@ -224,7 +223,6 @@ class JigyasaClient:
 
     def open_collection(self, name: str, schema_json: str = ""):
         """Reopen a persisted collection after Jigyasa restart."""
-        _load_stubs()
         self._call(
             "OpenCollection",
             _pb2.OpenCollectionRequest(collection=name, indexSchema=schema_json),
@@ -256,6 +254,22 @@ class JigyasaClient:
         )
         return len(documents)
 
+    @staticmethod
+    def _build_filters(filters: list[dict]) -> list:
+        """Build gRPC FilterClause list from dict filters."""
+        _load_stubs()
+        clauses = []
+        for f in filters:
+            clause = _pb2.FilterClause(field=f["field"])
+            if "value" in f:
+                clause.term_filter.CopyFrom(_pb2.TermFilter(value=f["value"]))
+            elif "min" in f or "max" in f:
+                clause.range_filter.CopyFrom(
+                    _pb2.RangeFilter(min=f.get("min", ""), max=f.get("max", ""))
+                )
+            clauses.append(clause)
+        return clauses
+
     def query(
         self,
         collection: str,
@@ -268,9 +282,9 @@ class JigyasaClient:
         text_weight: float = 0.5,
     ) -> SearchResult:
         """Search a collection with BM25 and optional KNN vector search."""
-        _load_stubs()
         start = time.time()
 
+        _load_stubs()
         request = _pb2.QueryRequest(
             collection=collection,
             text_query=text_query,
@@ -278,23 +292,9 @@ class JigyasaClient:
             include_source=include_source,
         )
 
-        # Build filters
         if filters:
-            for f in filters:
-                clause = _pb2.FilterClause(field=f["field"])
-                if "value" in f:
-                    clause.term_filter.CopyFrom(
-                        _pb2.TermFilter(value=f["value"])
-                    )
-                elif "min" in f or "max" in f:
-                    clause.range_filter.CopyFrom(
-                        _pb2.RangeFilter(
-                            min=f.get("min", ""), max=f.get("max", "")
-                        )
-                    )
-                request.filters.append(clause)
+            request.filters.extend(self._build_filters(filters))
 
-        # Phase 2: Vector search
         if vector:
             request.vector_query.CopyFrom(
                 _pb2.VectorQuery(field=vector_field, vector=vector, k=top_k)
@@ -322,15 +322,11 @@ class JigyasaClient:
         """Delete documents matching filters."""
         _load_stubs()
         request = _pb2.DeleteByQueryRequest(collection=collection)
-        for f in filters:
-            clause = _pb2.FilterClause(field=f["field"])
-            if "value" in f:
-                clause.term_filter.CopyFrom(_pb2.TermFilter(value=f["value"]))
-            request.filters.append(clause)
+        request.filters.extend(self._build_filters(filters))
         self._call("DeleteByQuery", request)
 
     def count(self, collection: str) -> int:
-        _load_stubs()
+        self._ensure_connected()
         resp = self._call("Count", _pb2.CountRequest(collection=collection))
         return resp.count
 

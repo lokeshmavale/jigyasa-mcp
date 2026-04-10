@@ -311,71 +311,31 @@ def create_mcp_server(
                     },
                 },
             ),
-            Tool(
-                name="jigyasa_get_call_hierarchy",
-                description=(
-                    "Find what calls a method or what a method calls. "
-                    "Requires JDT Language Server (auto-downloaded on first use). "
-                    "Provide the file path and line number of the method."
-                ),
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "file_path": {"type": "string", "description": "Relative file path"},
-                        "line": {"type": "integer", "description": "Line number of the symbol"},
-                        "character": {"type": "integer", "description": "Column (default: 0)", "default": 0},
-                        "direction": {
-                            "type": "string",
-                            "enum": ["incoming", "outgoing"],
-                            "description": "incoming = what calls this, outgoing = what this calls",
-                            "default": "incoming",
-                        },
-                    },
-                    "required": ["file_path", "line"],
-                },
-            ),
-            Tool(
-                name="jigyasa_get_references",
-                description=(
-                    "Find all references to a symbol (class, method, field) across the codebase. "
-                    "Requires JDT Language Server. Provide file path and line number."
-                ),
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "file_path": {"type": "string", "description": "Relative file path"},
-                        "line": {"type": "integer", "description": "Line number of the symbol"},
-                        "character": {"type": "integer", "description": "Column (default: 0)", "default": 0},
-                    },
-                    "required": ["file_path", "line"],
-                },
-            ),
         ]
 
     @server.call_tool()
     async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         try:
+            # Resolve repo + namespaced collections once per call
+            resolved_root, _, cols = _resolve_repo(repo_root)
+
             if name == "jigyasa_search_symbols":
                 validated = SearchSymbolsInput(**arguments)
-                text = _handle_search_symbols(client, validated)
+                text = _handle_search_symbols(client, validated, cols)
             elif name == "jigyasa_search_code":
                 validated = SearchCodeInput(**arguments)
-                text = _handle_search_code(client, validated, use_embeddings)
+                text = _handle_search_code(client, validated, use_embeddings, cols)
             elif name == "jigyasa_search_files":
                 validated = SearchFilesInput(**arguments)
-                text = _handle_search_files(client, validated)
+                text = _handle_search_files(client, validated, cols)
             elif name == "jigyasa_get_context":
                 validated = GetContextInput(**arguments)
-                text = _handle_get_context(validated, repo_root)
+                text = _handle_get_context(validated, resolved_root or repo_root)
             elif name == "jigyasa_index_status":
-                text = _handle_index_status(repo_root, endpoint)
+                text = _handle_index_status(resolved_root or repo_root, endpoint)
             elif name == "jigyasa_reindex":
                 validated = ReindexInput(**arguments)
-                text = _handle_reindex(validated, repo_root, endpoint, use_embeddings)
-            elif name == "jigyasa_get_call_hierarchy":
-                text = _handle_call_hierarchy(arguments, repo_root)
-            elif name == "jigyasa_get_references":
-                text = _handle_references(arguments, repo_root)
+                text = _handle_reindex(validated, resolved_root or repo_root, endpoint, use_embeddings)
             else:
                 text = f"Unknown tool: {name}"
             return [TextContent(type="text", text=truncate_response(text))]
@@ -390,7 +350,7 @@ def create_mcp_server(
     return server
 
 
-def _handle_search_symbols(client: JigyasaClient, args: SearchSymbolsInput) -> str:
+def _handle_search_symbols(client: JigyasaClient, args: SearchSymbolsInput, cols: dict) -> str:
     query = args.query
     filters = []
 
@@ -408,12 +368,12 @@ def _handle_search_symbols(client: JigyasaClient, args: SearchSymbolsInput) -> s
     if args.package_prefix:
         query += f" {args.package_prefix}"
 
-    result = client.query("symbols", text_query=query, filters=filters, top_k=args.limit)
+    result = client.query(cols["symbols"], text_query=query, filters=filters, top_k=args.limit)
     result = rerank(result, args.query)
     return _format_hits(result, max_results=args.limit, query=args.query)
 
 
-def _handle_search_code(client: JigyasaClient, args: SearchCodeInput, use_embeddings: bool) -> str:
+def _handle_search_code(client: JigyasaClient, args: SearchCodeInput, use_embeddings: bool, cols: dict) -> str:
     query = args.query
     filters = []
 
@@ -432,7 +392,7 @@ def _handle_search_code(client: JigyasaClient, args: SearchCodeInput, use_embedd
             pass
 
     result = client.query(
-        "chunks",
+        cols["chunks"],
         text_query=query,
         filters=filters,
         top_k=args.limit,
@@ -443,14 +403,14 @@ def _handle_search_code(client: JigyasaClient, args: SearchCodeInput, use_embedd
     return _format_hits(result, max_results=args.limit, query=args.query)
 
 
-def _handle_search_files(client: JigyasaClient, args: SearchFilesInput) -> str:
+def _handle_search_files(client: JigyasaClient, args: SearchFilesInput, cols: dict) -> str:
     filters = []
     if args.extension:
         filters.append({"field": "extension", "value": args.extension})
     if args.module:
         filters.append({"field": "module", "value": args.module})
 
-    result = client.query("files", text_query=args.query, filters=filters, top_k=args.limit)
+    result = client.query(cols["files"], text_query=args.query, filters=filters, top_k=args.limit)
     return _format_hits(result, max_results=args.limit, query=args.query)
 
 
@@ -517,78 +477,6 @@ def _handle_reindex(args: ReindexInput, repo_root: str, endpoint: str, use_embed
         f"  Errors: {len(stats.errors)}"
     )
 
-
-# Lazy JDT LS instance — started on first call to call_hierarchy/references
-_jdt_server = None
-_jdt_lock = threading.Lock()
-
-
-def _get_jdt(repo_root: str):
-    global _jdt_server
-    if _jdt_server and _jdt_server.is_running():
-        return _jdt_server
-    with _jdt_lock:
-        if _jdt_server and _jdt_server.is_running():
-            return _jdt_server
-        from jigyasa_mcp.jdt_lsp import JdtLanguageServer
-        _jdt_server = JdtLanguageServer(repo_root)
-        if not _jdt_server.start():
-            _jdt_server = None
-            return None
-        return _jdt_server
-
-
-def _handle_call_hierarchy(args: dict, repo_root: str) -> str:
-    if not repo_root:
-        return "ERROR: No repository configured"
-
-    jdt = _get_jdt(repo_root)
-    if not jdt:
-        return "ERROR: JDT Language Server failed to start. Is Java 21+ installed?"
-
-    file_path = args["file_path"]
-    line = args["line"]
-    character = args.get("character", 0)
-    direction = args.get("direction", "incoming")
-
-    if direction == "incoming":
-        calls = jdt.call_hierarchy_incoming(file_path, line, character)
-        header = f"Incoming calls to {file_path}:{line}"
-    else:
-        calls = jdt.call_hierarchy_outgoing(file_path, line, character)
-        header = f"Outgoing calls from {file_path}:{line}"
-
-    if not calls:
-        return f"{header}\n  No results (JDT may still be indexing the project — try again in 30s)"
-
-    lines = [f"{header} ({len(calls)} results):"]
-    for c in calls:
-        lines.append(f"  {c['name']} — {c['file_path']}:{c['line']}")
-    return "\n".join(lines)
-
-
-def _handle_references(args: dict, repo_root: str) -> str:
-    if not repo_root:
-        return "ERROR: No repository configured"
-
-    jdt = _get_jdt(repo_root)
-    if not jdt:
-        return "ERROR: JDT Language Server failed to start. Is Java 21+ installed?"
-
-    file_path = args["file_path"]
-    line = args["line"]
-    character = args.get("character", 0)
-
-    refs = jdt.find_references(file_path, line, character)
-    header = f"References to {file_path}:{line}"
-
-    if not refs:
-        return f"{header}\n  No results (JDT may still be indexing — try again in 30s)"
-
-    lines = [f"{header} ({len(refs)} results):"]
-    for r in refs:
-        lines.append(f"  {r['file_path']}:{r['line']}")
-    return "\n".join(lines)
 
 
 def self_test(endpoint: str) -> bool:

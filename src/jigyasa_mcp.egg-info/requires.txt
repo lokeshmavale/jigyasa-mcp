@@ -1,0 +1,15 @@
+grpcio<2.0,>=1.60.0
+grpcio-tools<2.0,>=1.60.0
+protobuf<6.0,>=4.25.0
+tree-sitter<1.0,>=0.23.0
+tree-sitter-java<1.0,>=0.23.0
+mcp<2.0,>=1.0.0
+pydantic<3.0,>=2.8.0
+sentence-transformers<5.0,>=3.0.0
+click<9.0,>=8.0.0
+
+[dev]
+pytest>=8.0
+pytest-asyncio>=0.24
+ruff>=0.8
+mypy>=1.13

@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jigyasa-mcp"
+version = "0.1.0"
+description = "MCP server + indexing pipeline for Jigyasa code search"
+requires-python = ">=3.10"
+dependencies = [
+    "grpcio>=1.60.0,<2.0",
+    "grpcio-tools>=1.60.0,<2.0",
+    "protobuf>=4.25.0,<6.0",
+    "tree-sitter>=0.23.0,<1.0",
+    "tree-sitter-java>=0.23.0,<1.0",
+    "mcp>=1.0.0,<2.0",
+    "pydantic>=2.8.0,<3.0",
+    "sentence-transformers>=3.0.0,<5.0",
+    "click>=8.0.0,<9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.8",
+    "mypy>=1.13",
+]
+
+[project.scripts]
+jigyasa-index = "jigyasa_mcp.cli:index_cli"
+jigyasa-mcp = "jigyasa_mcp.cli:mcp_cli"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

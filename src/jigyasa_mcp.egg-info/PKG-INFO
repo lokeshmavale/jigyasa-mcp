@@ -1,0 +1,19 @@
+Metadata-Version: 2.4
+Name: jigyasa-mcp
+Version: 0.1.0
+Summary: MCP server + indexing pipeline for Jigyasa code search
+Requires-Python: >=3.10
+Requires-Dist: grpcio<2.0,>=1.60.0
+Requires-Dist: grpcio-tools<2.0,>=1.60.0
+Requires-Dist: protobuf<6.0,>=4.25.0
+Requires-Dist: tree-sitter<1.0,>=0.23.0
+Requires-Dist: tree-sitter-java<1.0,>=0.23.0
+Requires-Dist: mcp<2.0,>=1.0.0
+Requires-Dist: pydantic<3.0,>=2.8.0
+Requires-Dist: sentence-transformers<5.0,>=3.0.0
+Requires-Dist: click<9.0,>=8.0.0
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.24; extra == "dev"
+Requires-Dist: ruff>=0.8; extra == "dev"
+Requires-Dist: mypy>=1.13; extra == "dev"

@@ -1,0 +1,3 @@
+[console_scripts]
+jigyasa-index = jigyasa_mcp.cli:index_cli
+jigyasa-mcp = jigyasa_mcp.cli:mcp_cli

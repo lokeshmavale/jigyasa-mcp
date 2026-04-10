@@ -87,6 +87,7 @@ def _file_lock(repo_root: str):
 class IndexState:
     last_indexed_commit: str = ""
     last_indexed_at: str = ""
+    last_indexed_branch: str = ""  # track branch for switch detection
     total_symbols: int = 0
     total_chunks: int = 0
     total_files: int = 0
@@ -134,6 +135,23 @@ def _git_head_sha(repo_root: str) -> str:
         cwd=repo_root, capture_output=True, text=True,
     )
     return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _git_current_branch(repo_root: str) -> str:
+    result = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=repo_root, capture_output=True, text=True,
+    )
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _git_commit_exists(repo_root: str, sha: str) -> bool:
+    """Check if a commit SHA still exists in the repo (survives gc, force-push)."""
+    result = subprocess.run(
+        ["git", "cat-file", "-t", sha],
+        cwd=repo_root, capture_output=True, text=True,
+    )
+    return result.returncode == 0 and result.stdout.strip() == "commit"
 
 
 def _git_diff_files(repo_root: str, from_sha: str, to_sha: str = "HEAD") -> list[tuple[str, str, str]]:
@@ -245,7 +263,29 @@ def _file_to_doc(fdoc: FileDoc) -> dict:
     }
 
 
-def _ensure_collections(client: JigyasaClient, use_embeddings: bool):
+def _derive_repo_prefix(repo_root: str) -> str:
+    """Derive a safe collection name prefix from the repo directory name.
+
+    e.g. C:\\azs\\repos\\OpenSearch → opensearch
+         /home/user/my-cool-project → my_cool_project
+    """
+    name = os.path.basename(os.path.abspath(repo_root))
+    # Sanitize: lowercase, replace non-alphanumeric with underscore
+    import re
+    prefix = re.sub(r"[^a-z0-9]", "_", name.lower()).strip("_")
+    return prefix or "default"
+
+
+def _collection_names(prefix: str) -> dict[str, str]:
+    """Return namespaced collection names for a repo prefix."""
+    return {
+        "symbols": f"{prefix}_symbols",
+        "chunks": f"{prefix}_chunks",
+        "files": f"{prefix}_files",
+    }
+
+
+def _ensure_collections(client: JigyasaClient, use_embeddings: bool, prefix: str = ""):
     """Create collections if they don't exist."""
     try:
         health = client.health()
@@ -253,27 +293,35 @@ def _ensure_collections(client: JigyasaClient, use_embeddings: bool):
     except Exception:
         existing = set()
 
-    for name in ("symbols", "chunks", "files"):
-        if name not in existing:
-            schema = get_schema_json(name, use_embeddings=use_embeddings)
-            client.create_collection(name, schema)
-            logger.info(f"Created collection: {name}")
+    names = _collection_names(prefix) if prefix else {"symbols": "symbols", "chunks": "chunks", "files": "files"}
+    for logical, actual in names.items():
+        if actual not in existing:
+            schema = get_schema_json(logical, use_embeddings=use_embeddings)
+            client.create_collection(actual, schema)
+            logger.info(f"Created collection: {actual}")
 
 
 class Indexer:
-    """Main indexing pipeline for a Git repository."""
+    """Main indexing pipeline for a Git repository.
+
+    Supports multi-repo via namespaced collections. Each repo gets its own
+    set of collections: {prefix}_symbols, {prefix}_chunks, {prefix}_files.
+    """
 
     def __init__(
         self,
         repo_root: str,
         endpoint: str = "localhost:50051",
         use_embeddings: bool = False,
+        repo_prefix: str = "",
     ):
         self.repo_root = os.path.abspath(repo_root)
         self.client = JigyasaClient(endpoint=endpoint)
         self.use_embeddings = use_embeddings and embeddings_available()
         self.java_chunker = JavaChunker()
         self.text_chunker = TextChunker()
+        self.prefix = repo_prefix or _derive_repo_prefix(repo_root)
+        self.collections = _collection_names(self.prefix)
 
     def full_index(self) -> IndexStats:
         """Full reindex of the entire repository."""
@@ -285,7 +333,7 @@ class Indexer:
         stats = IndexStats()
         state = IndexState(use_embeddings=self.use_embeddings)
 
-        _ensure_collections(self.client, self.use_embeddings)
+        _ensure_collections(self.client, self.use_embeddings, self.prefix)
 
         all_files = _git_ls_files(self.repo_root)
         head_sha = _git_head_sha(self.repo_root)
@@ -355,6 +403,7 @@ class Indexer:
 
         # Save state
         state.last_indexed_commit = head_sha
+        state.last_indexed_branch = _git_current_branch(self.repo_root)
         state.last_indexed_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         state.total_symbols = stats.symbols_indexed
         state.total_chunks = stats.chunks_indexed
@@ -379,8 +428,25 @@ class Indexer:
         stats = IndexStats()
         state = IndexState.load(self.repo_root)
         head_sha = _git_head_sha(self.repo_root)
+        current_branch = _git_current_branch(self.repo_root)
 
-        _ensure_collections(self.client, self.use_embeddings)
+        # Safety: if last indexed commit no longer exists (gc, force-push,
+        # shallow clone), fall back to full reindex.
+        if state.last_indexed_commit and not _git_commit_exists(
+            self.repo_root, state.last_indexed_commit
+        ):
+            logger.warning(
+                f"Last indexed commit {state.last_indexed_commit[:12]} no longer "
+                f"exists. Falling back to full reindex."
+            )
+            return self._full_index_impl()
+
+        if current_branch != state.last_indexed_branch and state.last_indexed_branch:
+            logger.info(
+                f"Branch switch detected: {state.last_indexed_branch} → {current_branch}"
+            )
+
+        _ensure_collections(self.client, self.use_embeddings, self.prefix)
 
         # Collect all changed file paths
         changed_files: dict[str, str] = {}  # rel_path → status
@@ -498,6 +564,7 @@ class Indexer:
 
         # Update state
         state.last_indexed_commit = head_sha
+        state.last_indexed_branch = current_branch
         state.last_indexed_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         state.total_symbols += stats.symbols_indexed
         state.total_chunks += stats.chunks_indexed

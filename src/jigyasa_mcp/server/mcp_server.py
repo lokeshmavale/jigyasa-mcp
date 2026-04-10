@@ -78,6 +78,35 @@ def _format_hits(result, max_results: int = 20) -> str:
     return "\n".join(lines)
 
 
+def _resolve_repo(repo_root: str, cwd: str = "") -> tuple[str, str, dict[str, str]]:
+    """Resolve which repo to target.
+
+    Returns: (repo_root, prefix, collection_names_dict)
+    Uses CWD auto-detection via the repo registry.
+    """
+    from jigyasa_mcp.registry import RepoRegistry
+    from jigyasa_mcp.indexer.pipeline import _derive_repo_prefix, _collection_names
+
+    registry = RepoRegistry.load()
+
+    # 1. Try CWD detection
+    if cwd:
+        entry = registry.find_by_cwd(cwd)
+        if entry:
+            return entry.root, entry.prefix, _collection_names(entry.prefix)
+
+    # 2. Fall back to explicit repo_root
+    if repo_root:
+        prefix = _derive_repo_prefix(repo_root)
+        entry = registry.find_by_prefix(prefix)
+        if entry:
+            return entry.root, entry.prefix, _collection_names(entry.prefix)
+        return repo_root, prefix, _collection_names(prefix)
+
+    # 3. No repo found — use un-namespaced collections (backward compat)
+    return "", "", {"symbols": "symbols", "chunks": "chunks", "files": "files"}
+
+
 def create_mcp_server(
     endpoint: str = "localhost:50051",
     repo_root: str = "",

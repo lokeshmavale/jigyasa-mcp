@@ -24,16 +24,19 @@ from mcp.types import Tool, TextContent
 from jigyasa_mcp.grpc_client import JigyasaClient
 from jigyasa_mcp.indexer.pipeline import Indexer
 from jigyasa_mcp.indexer.embeddings import is_available as embeddings_available, embed_single
+from jigyasa_mcp.server.reranker import rerank
 from jigyasa_mcp.server.validation import (
     SearchSymbolsInput, SearchCodeInput, SearchFilesInput,
     GetContextInput, ReindexInput,
     validate_path_within_root, truncate_response, MAX_RESPONSE_CHARS,
 )
 
+from jigyasa_mcp.server.highlighter import highlight_search_result
+
 logger = logging.getLogger(__name__)
 
 
-def _format_hits(result, max_results: int = 20) -> str:
+def _format_hits(result, max_results: int = 20, query: str = "") -> str:
     """Format search results for LLM consumption."""
     lines = [f"Found {result.total_hits} results ({result.latency_ms:.1f}ms):"]
     for i, hit in enumerate(result.hits[:max_results]):
@@ -57,12 +60,20 @@ def _format_hits(result, max_results: int = 20) -> str:
                 lines.append(f"      extends {src['extends_class']}")
             if src.get("implements"):
                 lines.append(f"      implements {src['implements']}")
+            if src.get("type_references"):
+                lines.append(f"      references: {src['type_references'][:100]}")
         elif "content" in src:
-            # Chunk hit
-            content_preview = src["content"][:300].replace("\n", "\n      ")
+            # Chunk hit — use highlighter if query is available
             symbol = src.get("symbol_name", "")
             lines.append(f"  [{i+1}] {loc} ({src.get('kind', 'chunk')}: {symbol})")
-            lines.append(f"      {content_preview}")
+            if query:
+                highlighted = highlight_search_result(src, query)
+                if highlighted:
+                    lines.append(f"      {highlighted}")
+                else:
+                    lines.append(f"      {src['content'][:300].replace(chr(10), chr(10) + '      ')}")
+            else:
+                lines.append(f"      {src['content'][:300].replace(chr(10), chr(10) + '      ')}")
         elif "path" in src:
             # File hit
             lines.append(
@@ -300,6 +311,45 @@ def create_mcp_server(
                     },
                 },
             ),
+            Tool(
+                name="jigyasa_get_call_hierarchy",
+                description=(
+                    "Find what calls a method or what a method calls. "
+                    "Requires JDT Language Server (auto-downloaded on first use). "
+                    "Provide the file path and line number of the method."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "file_path": {"type": "string", "description": "Relative file path"},
+                        "line": {"type": "integer", "description": "Line number of the symbol"},
+                        "character": {"type": "integer", "description": "Column (default: 0)", "default": 0},
+                        "direction": {
+                            "type": "string",
+                            "enum": ["incoming", "outgoing"],
+                            "description": "incoming = what calls this, outgoing = what this calls",
+                            "default": "incoming",
+                        },
+                    },
+                    "required": ["file_path", "line"],
+                },
+            ),
+            Tool(
+                name="jigyasa_get_references",
+                description=(
+                    "Find all references to a symbol (class, method, field) across the codebase. "
+                    "Requires JDT Language Server. Provide file path and line number."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "file_path": {"type": "string", "description": "Relative file path"},
+                        "line": {"type": "integer", "description": "Line number of the symbol"},
+                        "character": {"type": "integer", "description": "Column (default: 0)", "default": 0},
+                    },
+                    "required": ["file_path", "line"],
+                },
+            ),
         ]
 
     @server.call_tool()
@@ -322,6 +372,10 @@ def create_mcp_server(
             elif name == "jigyasa_reindex":
                 validated = ReindexInput(**arguments)
                 text = _handle_reindex(validated, repo_root, endpoint, use_embeddings)
+            elif name == "jigyasa_get_call_hierarchy":
+                text = _handle_call_hierarchy(arguments, repo_root)
+            elif name == "jigyasa_get_references":
+                text = _handle_references(arguments, repo_root)
             else:
                 text = f"Unknown tool: {name}"
             return [TextContent(type="text", text=truncate_response(text))]
@@ -355,7 +409,8 @@ def _handle_search_symbols(client: JigyasaClient, args: SearchSymbolsInput) -> s
         query += f" {args.package_prefix}"
 
     result = client.query("symbols", text_query=query, filters=filters, top_k=args.limit)
-    return _format_hits(result, max_results=args.limit)
+    result = rerank(result, args.query)
+    return _format_hits(result, max_results=args.limit, query=args.query)
 
 
 def _handle_search_code(client: JigyasaClient, args: SearchCodeInput, use_embeddings: bool) -> str:
@@ -384,7 +439,8 @@ def _handle_search_code(client: JigyasaClient, args: SearchCodeInput, use_embedd
         vector=vector,
         text_weight=0.4 if vector else 1.0,
     )
-    return _format_hits(result, max_results=args.limit)
+    result = rerank(result, args.query, exclude_tests=args.exclude_tests)
+    return _format_hits(result, max_results=args.limit, query=args.query)
 
 
 def _handle_search_files(client: JigyasaClient, args: SearchFilesInput) -> str:
@@ -395,7 +451,7 @@ def _handle_search_files(client: JigyasaClient, args: SearchFilesInput) -> str:
         filters.append({"field": "module", "value": args.module})
 
     result = client.query("files", text_query=args.query, filters=filters, top_k=args.limit)
-    return _format_hits(result, max_results=args.limit)
+    return _format_hits(result, max_results=args.limit, query=args.query)
 
 
 def _handle_get_context(args: GetContextInput, repo_root: str) -> str:
@@ -460,6 +516,79 @@ def _handle_reindex(args: ReindexInput, repo_root: str, endpoint: str, use_embed
         f"  Time: {stats.elapsed_seconds:.1f}s\n"
         f"  Errors: {len(stats.errors)}"
     )
+
+
+# Lazy JDT LS instance — started on first call to call_hierarchy/references
+_jdt_server = None
+_jdt_lock = threading.Lock()
+
+
+def _get_jdt(repo_root: str):
+    global _jdt_server
+    if _jdt_server and _jdt_server.is_running():
+        return _jdt_server
+    with _jdt_lock:
+        if _jdt_server and _jdt_server.is_running():
+            return _jdt_server
+        from jigyasa_mcp.jdt_lsp import JdtLanguageServer
+        _jdt_server = JdtLanguageServer(repo_root)
+        if not _jdt_server.start():
+            _jdt_server = None
+            return None
+        return _jdt_server
+
+
+def _handle_call_hierarchy(args: dict, repo_root: str) -> str:
+    if not repo_root:
+        return "ERROR: No repository configured"
+
+    jdt = _get_jdt(repo_root)
+    if not jdt:
+        return "ERROR: JDT Language Server failed to start. Is Java 21+ installed?"
+
+    file_path = args["file_path"]
+    line = args["line"]
+    character = args.get("character", 0)
+    direction = args.get("direction", "incoming")
+
+    if direction == "incoming":
+        calls = jdt.call_hierarchy_incoming(file_path, line, character)
+        header = f"Incoming calls to {file_path}:{line}"
+    else:
+        calls = jdt.call_hierarchy_outgoing(file_path, line, character)
+        header = f"Outgoing calls from {file_path}:{line}"
+
+    if not calls:
+        return f"{header}\n  No results (JDT may still be indexing the project — try again in 30s)"
+
+    lines = [f"{header} ({len(calls)} results):"]
+    for c in calls:
+        lines.append(f"  {c['name']} — {c['file_path']}:{c['line']}")
+    return "\n".join(lines)
+
+
+def _handle_references(args: dict, repo_root: str) -> str:
+    if not repo_root:
+        return "ERROR: No repository configured"
+
+    jdt = _get_jdt(repo_root)
+    if not jdt:
+        return "ERROR: JDT Language Server failed to start. Is Java 21+ installed?"
+
+    file_path = args["file_path"]
+    line = args["line"]
+    character = args.get("character", 0)
+
+    refs = jdt.find_references(file_path, line, character)
+    header = f"References to {file_path}:{line}"
+
+    if not refs:
+        return f"{header}\n  No results (JDT may still be indexing — try again in 30s)"
+
+    lines = [f"{header} ({len(refs)} results):"]
+    for r in refs:
+        lines.append(f"  {r['file_path']}:{r['line']}")
+    return "\n".join(lines)
 
 
 def self_test(endpoint: str) -> bool:

@@ -225,6 +225,8 @@ def _symbol_to_doc(sym: Symbol) -> dict:
         "line_start": sym.line_start,
         "line_end": sym.line_end,
         "body_preview": sym.body_preview,
+        "imports": sym.imports,
+        "type_references": sym.type_references,
     }
 
 
@@ -286,7 +288,7 @@ def _collection_names(prefix: str) -> dict[str, str]:
 
 
 def _ensure_collections(client: JigyasaClient, use_embeddings: bool, prefix: str = ""):
-    """Create collections if they don't exist."""
+    """Ensure collections exist — try reopen first, then create if needed."""
     try:
         health = client.health()
         existing = {c["name"] for c in health["collections"]}
@@ -296,6 +298,14 @@ def _ensure_collections(client: JigyasaClient, use_embeddings: bool, prefix: str
     names = _collection_names(prefix) if prefix else {"symbols": "symbols", "chunks": "chunks", "files": "files"}
     for logical, actual in names.items():
         if actual not in existing:
+            # Try to reopen persisted collection first (survives Jigyasa restart)
+            try:
+                client.open_collection(actual)
+                logger.info(f"Reopened persisted collection: {actual}")
+                continue
+            except Exception:
+                pass
+            # Doesn't exist at all — create new
             schema = get_schema_json(logical, use_embeddings=use_embeddings)
             client.create_collection(actual, schema)
             logger.info(f"Created collection: {actual}")
@@ -316,7 +326,7 @@ class Indexer:
         repo_prefix: str = "",
     ):
         self.repo_root = os.path.abspath(repo_root)
-        self.client = JigyasaClient(endpoint=endpoint)
+        self.client = JigyasaClient(endpoint=endpoint, timeout=30.0)
         self.use_embeddings = use_embeddings and embeddings_available()
         self.java_chunker = JavaChunker()
         self.text_chunker = TextChunker()
@@ -380,7 +390,7 @@ class Indexer:
 
             # Flush batches
             if len(symbol_batch) >= SYMBOL_BATCH_SIZE:
-                self.client.index_batch("symbols", symbol_batch)
+                self.client.index_batch(self.collections["symbols"], symbol_batch)
                 stats.symbols_indexed += len(symbol_batch)
                 symbol_batch = []
 
@@ -389,17 +399,17 @@ class Indexer:
                 chunk_batch = []
 
             if len(file_batch) >= FILE_BATCH_SIZE:
-                self.client.index_batch("files", file_batch)
+                self.client.index_batch(self.collections["files"], file_batch)
                 file_batch = []
 
         # Flush remaining
         if symbol_batch:
-            self.client.index_batch("symbols", symbol_batch)
+            self.client.index_batch(self.collections["symbols"], symbol_batch)
             stats.symbols_indexed += len(symbol_batch)
         if chunk_batch:
             self._flush_chunks(chunk_batch, stats)
         if file_batch:
-            self.client.index_batch("files", file_batch)
+            self.client.index_batch(self.collections["files"], file_batch)
 
         # Save state
         state.last_indexed_commit = head_sha
@@ -497,7 +507,7 @@ class Indexer:
 
             if status == "D":
                 # Delete all docs for this file from all collections
-                for collection in ("symbols", "chunks", "files"):
+                for collection in self.collections.values():
                     try:
                         self.client.delete_by_query(
                             collection,
@@ -517,7 +527,7 @@ class Indexer:
                 continue
 
             # Delete old docs first (upsert = delete + insert)
-            for collection in ("symbols", "chunks", "files"):
+            for collection in self.collections.values():
                 try:
                     self.client.delete_by_query(
                         collection,
@@ -555,12 +565,12 @@ class Indexer:
 
         # Flush all batches
         if symbol_batch:
-            self.client.index_batch("symbols", symbol_batch)
+            self.client.index_batch(self.collections["symbols"], symbol_batch)
             stats.symbols_indexed += len(symbol_batch)
         if chunk_batch:
             self._flush_chunks(chunk_batch, stats)
         if file_batch:
-            self.client.index_batch("files", file_batch)
+            self.client.index_batch(self.collections["files"], file_batch)
 
         # Update state
         state.last_indexed_commit = head_sha
@@ -591,7 +601,7 @@ class Indexer:
                 logger.warning(f"Embedding generation failed, indexing without: {e}")
 
         docs = [_chunk_to_doc(c) for c in chunks]
-        self.client.index_batch("chunks", docs)
+        self.client.index_batch(self.collections["chunks"], docs)
         stats.chunks_indexed += len(chunks)
 
     def get_status(self) -> dict:
@@ -619,3 +629,4 @@ class Indexer:
             },
             "collections": collections,
         }
+

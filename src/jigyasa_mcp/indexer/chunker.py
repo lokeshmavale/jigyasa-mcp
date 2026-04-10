@@ -51,6 +51,8 @@ class Symbol:
     line_start: int
     line_end: int
     body_preview: str  # first ~200 chars of body
+    imports: str = ""  # comma-separated import packages (class-level only)
+    type_references: str = ""  # comma-separated types referenced in this symbol
 
 
 @dataclass
@@ -152,6 +154,26 @@ def _get_annotations(node) -> list[str]:
 
 def _get_text(node) -> str:
     return node.text.decode("utf-8") if isinstance(node.text, bytes) else node.text
+
+
+def _extract_type_references(node) -> list[str]:
+    """Extract all type_identifier references from a subtree (for dependency graph)."""
+    types = set()
+    _walk_types(node, types)
+    return sorted(types)
+
+
+def _walk_types(node, types: set):
+    if node.type == "type_identifier":
+        name = _get_text(node)
+        # Skip common Java types
+        if name not in ("String", "Object", "Class", "Integer", "Long", "Boolean",
+                        "Double", "Float", "Byte", "Short", "Character", "Void",
+                        "List", "Map", "Set", "Collection", "Optional", "Stream",
+                        "Override", "Deprecated", "SuppressWarnings"):
+            types.add(name)
+    for child in node.children:
+        _walk_types(child, types)
 
 
 def _get_superclass(node) -> str:
@@ -269,7 +291,11 @@ class JavaChunker:
         kind = node.type.replace("_declaration", "")
         body_text = _get_text(node)
 
-        # Class symbol
+        # Class symbol — with type references for dependency graph
+        type_refs = _extract_type_references(node)
+        # imports are file-level, captured from source
+        file_imports = ", ".join(_extract_imports(source)) if not parent_class else ""
+
         symbols.append(Symbol(
             id=f"{file_path}::{kind}::{qualified}",
             name=cls_name,
@@ -287,6 +313,8 @@ class JavaChunker:
             line_start=node.start_point[0] + 1,
             line_end=node.end_point[0] + 1,
             body_preview=body_text[:200],
+            imports=file_imports,
+            type_references=", ".join(type_refs[:50]),  # cap at 50 to avoid huge fields
         ))
 
         # Class summary chunk (Javadoc + method signatures, no bodies)

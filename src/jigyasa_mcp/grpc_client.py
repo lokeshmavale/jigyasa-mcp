@@ -222,6 +222,15 @@ class JigyasaClient:
         )
         logger.info(f"Created collection: {name}")
 
+    def open_collection(self, name: str, schema_json: str = ""):
+        """Reopen a persisted collection after Jigyasa restart."""
+        _load_stubs()
+        self._call(
+            "OpenCollection",
+            _pb2.OpenCollectionRequest(collection=name, indexSchema=schema_json),
+        )
+        logger.info(f"Opened collection: {name}")
+
     def index_batch(
         self,
         collection: str,

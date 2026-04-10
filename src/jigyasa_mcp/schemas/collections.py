@@ -20,6 +20,8 @@ SYMBOLS_SCHEMA = {
         {"name": "line_start", "type": "INT32"},
         {"name": "line_end", "type": "INT32"},
         {"name": "body_preview", "type": "STRING", "searchable": True},
+        {"name": "imports", "type": "STRING", "searchable": True},
+        {"name": "type_references", "type": "STRING", "searchable": True},
     ]
 }
 

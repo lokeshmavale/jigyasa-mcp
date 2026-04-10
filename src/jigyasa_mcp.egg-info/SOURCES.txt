@@ -6,7 +6,6 @@ src/jigyasa_mcp/cli.py
 src/jigyasa_mcp/dpSearch_pb2.py
 src/jigyasa_mcp/dpSearch_pb2_grpc.py
 src/jigyasa_mcp/grpc_client.py
-src/jigyasa_mcp/jdt_lsp.py
 src/jigyasa_mcp/jigyasa_launcher.py
 src/jigyasa_mcp/py.typed
 src/jigyasa_mcp/registry.py

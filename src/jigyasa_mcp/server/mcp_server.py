@@ -480,12 +480,18 @@ def _handle_reindex(args: ReindexInput, repo_root: str, endpoint: str, use_embed
 
 
 def self_test(endpoint: str) -> bool:
-    """Verify MCP ↔ Jigyasa connectivity by creating a temp collection,
-    indexing a doc, querying it, then cleaning up. Returns True on success."""
+    """Verify MCP ↔ Jigyasa connectivity: health check + create + index + query."""
     import uuid
     test_collection = f"_selftest_{uuid.uuid4().hex[:8]}"
     client = JigyasaClient(endpoint=endpoint, timeout=5.0)
     try:
+        # Step 1: Health check
+        health = client.health()
+        if health["status"] != "SERVING":
+            logger.error("Self-test: Jigyasa not serving")
+            return False
+
+        # Step 2: Create, index, query
         schema = json.dumps({"fields": [
             {"name": "id", "type": "STRING", "key": True},
             {"name": "content", "type": "STRING", "searchable": True},
@@ -497,10 +503,7 @@ def self_test(endpoint: str) -> bool:
         import time
         time.sleep(0.5)
         result = client.query(test_collection, text_query="self test", top_k=1)
-        success = result.total_hits >= 1
-        # Cleanup: delete docs (no drop collection API, so just delete all)
-        client.delete_by_query(test_collection, [{"field": "id", "value": "test1"}])
-        return success
+        return result.total_hits >= 1
     except Exception as e:
         logger.error(f"Self-test failed: {e}")
         return False

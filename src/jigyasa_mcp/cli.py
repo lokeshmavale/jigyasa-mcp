@@ -65,6 +65,26 @@ def mcp_cli(endpoint: str, repo: str, embeddings: bool, run_self_test: bool, aut
                 click.echo("ERROR: Failed to auto-start Jigyasa", err=True)
                 sys.exit(1)
 
+        # Auto-reopen persisted collections from registry
+        from jigyasa_mcp.registry import RepoRegistry
+        from jigyasa_mcp.grpc_client import JigyasaClient
+        from jigyasa_mcp.indexer.pipeline import _collection_names
+        try:
+            registry = RepoRegistry.load()
+            client = JigyasaClient(endpoint=endpoint, timeout=10.0)
+            health = client.health()
+            existing = {c["name"] for c in health["collections"]}
+            for entry in registry.list_repos():
+                for _, col_name in _collection_names(entry.prefix).items():
+                    if col_name not in existing:
+                        try:
+                            client.open_collection(col_name)
+                        except Exception:
+                            pass
+            client.close()
+        except Exception:
+            pass  # Non-fatal — collections will be opened on first query
+
     if run_self_test:
         from jigyasa_mcp.server.mcp_server import self_test
         click.echo(f"Running self-test against {endpoint}...")

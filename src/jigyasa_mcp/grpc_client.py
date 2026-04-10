@@ -215,6 +215,7 @@ class JigyasaClient:
         }
 
     def create_collection(self, name: str, schema_json: str):
+        self._ensure_connected()
         self._call(
             "CreateCollection",
             _pb2.CreateCollectionRequest(collection=name, indexSchema=schema_json),
@@ -223,6 +224,7 @@ class JigyasaClient:
 
     def open_collection(self, name: str, schema_json: str = ""):
         """Reopen a persisted collection after Jigyasa restart."""
+        self._ensure_connected()
         self._call(
             "OpenCollection",
             _pb2.OpenCollectionRequest(collection=name, indexSchema=schema_json),

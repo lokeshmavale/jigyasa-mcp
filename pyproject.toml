@@ -38,6 +38,7 @@ where = ["src"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+extend-exclude = ["*_pb2.py", "*_pb2_grpc.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP"]

@@ -9,7 +9,6 @@ based on signals that BM25 doesn't capture:
 """
 
 from dataclasses import dataclass
-from typing import Optional
 
 from jigyasa_mcp.grpc_client import SearchHit, SearchResult
 
@@ -81,7 +80,7 @@ def rerank(
     result: SearchResult,
     query: str,
     exclude_tests: bool = False,
-    config: Optional[RankingConfig] = None,
+    config: RankingConfig | None = None,
 ) -> SearchResult:
     """Apply static ranking boosts to search results."""
     if not result.hits:

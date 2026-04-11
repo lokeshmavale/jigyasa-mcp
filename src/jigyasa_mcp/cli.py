@@ -36,7 +36,10 @@ def index_cli(repo: str, endpoint: str, incremental: bool, embeddings: bool, sta
         stats = indexer.full_index()
 
     print(f"\n{'Incremental' if incremental else 'Full'} index complete:")
-    print(f"  Files: {stats.files_indexed} indexed, {stats.files_skipped} skipped, {stats.files_deleted} deleted")
+    indexed = stats.files_indexed
+    skipped = stats.files_skipped
+    deleted = stats.files_deleted
+    print(f"  Files: {indexed} indexed, {skipped} skipped, {deleted} deleted")
     print(f"  Symbols: {stats.symbols_indexed}")
     print(f"  Chunks: {stats.chunks_indexed}")
     if stats.embeddings_generated:
@@ -52,7 +55,10 @@ def index_cli(repo: str, endpoint: str, incremental: bool, embeddings: bool, sta
 @click.option("--endpoint", default="localhost:50051", help="Jigyasa gRPC endpoint")
 @click.option("--repo", default="", help="Repository root for context lookups and reindexing")
 @click.option("--embeddings", is_flag=True, help="Enable hybrid search with local embeddings")
-@click.option("--self-test", "run_self_test", is_flag=True, help="Run connectivity self-test and exit")
+@click.option(
+    "--self-test", "run_self_test", is_flag=True,
+    help="Run connectivity self-test and exit",
+)
 @click.option("--auto-start", is_flag=True, help="Auto-start Jigyasa server if not running")
 def mcp_cli(endpoint: str, repo: str, embeddings: bool, run_self_test: bool, auto_start: bool):
     """Start the Jigyasa MCP server for GitHub Copilot CLI integration."""
@@ -66,9 +72,9 @@ def mcp_cli(endpoint: str, repo: str, embeddings: bool, run_self_test: bool, aut
                 sys.exit(1)
 
         # Auto-reopen persisted collections from registry
-        from jigyasa_mcp.registry import RepoRegistry
         from jigyasa_mcp.grpc_client import JigyasaClient
         from jigyasa_mcp.indexer.pipeline import _collection_names
+        from jigyasa_mcp.registry import RepoRegistry
         try:
             registry = RepoRegistry.load()
             client = JigyasaClient(endpoint=endpoint, timeout=10.0)
@@ -110,7 +116,8 @@ def mcp_cli(endpoint: str, repo: str, embeddings: bool, run_self_test: bool, aut
 def server_cli(port: int, heap_min: str, heap_max: str, jar: str, do_stop: bool, do_status: bool):
     """Manage the Jigyasa search engine server."""
     import json
-    from jigyasa_mcp.jigyasa_launcher import start, stop, status
+
+    from jigyasa_mcp.jigyasa_launcher import start, status, stop
 
     if do_status:
         print(json.dumps(status(port), indent=2))

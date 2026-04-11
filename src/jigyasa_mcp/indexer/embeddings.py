@@ -7,12 +7,11 @@ not installed.
 
 import logging
 import threading
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 _model = None
-_available: Optional[bool] = None
+_available: bool | None = None
 _model_lock = threading.Lock()
 
 

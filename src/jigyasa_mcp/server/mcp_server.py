@@ -14,24 +14,27 @@ import logging
 import os
 import signal
 import threading
-from typing import Optional
 
-from pydantic import ValidationError
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import Tool, TextContent
+from mcp.types import TextContent, Tool
+from pydantic import ValidationError
 
 from jigyasa_mcp.grpc_client import JigyasaClient
+from jigyasa_mcp.indexer.embeddings import embed_single
+from jigyasa_mcp.indexer.embeddings import is_available as embeddings_available
 from jigyasa_mcp.indexer.pipeline import Indexer
-from jigyasa_mcp.indexer.embeddings import is_available as embeddings_available, embed_single
+from jigyasa_mcp.server.highlighter import highlight_search_result
 from jigyasa_mcp.server.reranker import rerank
 from jigyasa_mcp.server.validation import (
-    SearchSymbolsInput, SearchCodeInput, SearchFilesInput,
-    GetContextInput, ReindexInput,
-    validate_path_within_root, truncate_response, MAX_RESPONSE_CHARS,
+    GetContextInput,
+    ReindexInput,
+    SearchCodeInput,
+    SearchFilesInput,
+    SearchSymbolsInput,
+    truncate_response,
+    validate_path_within_root,
 )
-
-from jigyasa_mcp.server.highlighter import highlight_search_result
 
 logger = logging.getLogger(__name__)
 
@@ -71,9 +74,11 @@ def _format_hits(result, max_results: int = 20, query: str = "") -> str:
                 if highlighted:
                     lines.append(f"      {highlighted}")
                 else:
-                    lines.append(f"      {src['content'][:300].replace(chr(10), chr(10) + '      ')}")
+                    preview = src['content'][:300]
+                    lines.append(f"      {preview.replace(chr(10), chr(10) + '      ')}")
             else:
-                lines.append(f"      {src['content'][:300].replace(chr(10), chr(10) + '      ')}")
+                preview = src['content'][:300]
+                lines.append(f"      {preview.replace(chr(10), chr(10) + '      ')}")
         elif "path" in src:
             # File hit
             lines.append(
@@ -95,8 +100,8 @@ def _resolve_repo(repo_root: str, cwd: str = "") -> tuple[str, str, dict[str, st
     Returns: (repo_root, prefix, collection_names_dict)
     Uses CWD auto-detection via the repo registry.
     """
+    from jigyasa_mcp.indexer.pipeline import _collection_names, _derive_repo_prefix
     from jigyasa_mcp.registry import RepoRegistry
-    from jigyasa_mcp.indexer.pipeline import _derive_repo_prefix, _collection_names
 
     registry = RepoRegistry.load()
 
@@ -142,21 +147,39 @@ def create_mcp_server(
                     "properties": {
                         "query": {
                             "type": "string",
-                            "description": "Search query — matches against name, qualified_name, signature, package",
+                            "description": (
+                                "Search query — matches against name, "
+                                "qualified_name, signature, package"
+                            ),
                         },
                         "kind": {
                             "type": "array",
-                            "items": {"type": "string", "enum": ["class", "interface", "enum", "method", "constructor", "field"]},
+                            "items": {
+                                "type": "string",
+                                "enum": [
+                                    "class", "interface", "enum",
+                                    "method", "constructor", "field",
+                                ],
+                            },
                             "description": "Filter by symbol kind",
                         },
                         "visibility": {
                             "type": "array",
-                            "items": {"type": "string", "enum": ["public", "protected", "private", "package-private"]},
+                            "items": {
+                                "type": "string",
+                                "enum": [
+                                    "public", "protected",
+                                    "private", "package-private",
+                                ],
+                            },
                             "description": "Filter by visibility",
                         },
                         "package_prefix": {
                             "type": "string",
-                            "description": "Filter by package prefix (e.g., 'org.opensearch.cluster')",
+                            "description": (
+                                "Filter by package prefix "
+                                "(e.g., 'org.opensearch.cluster')"
+                            ),
                         },
                         "file_pattern": {
                             "type": "string",
@@ -164,7 +187,10 @@ def create_mcp_server(
                         },
                         "extends_or_implements": {
                             "type": "string",
-                            "description": "Filter symbols that extend or implement this class/interface",
+                            "description": (
+                                "Filter symbols that extend or "
+                                "implement this class/interface"
+                            ),
                         },
                         "has_annotation": {
                             "type": "string",
@@ -201,7 +227,10 @@ def create_mcp_server(
                         },
                         "module_path": {
                             "type": "string",
-                            "description": "Filter by module (e.g., 'server', 'plugins/transport-nio')",
+                            "description": (
+                                "Filter by module "
+                                "(e.g., 'server', 'plugins/transport-nio')"
+                            ),
                         },
                         "enclosing_class": {
                             "type": "string",
@@ -233,7 +262,10 @@ def create_mcp_server(
                     "properties": {
                         "query": {
                             "type": "string",
-                            "description": "Search query — matches path, filename, class names, imports",
+                            "description": (
+                                "Search query — matches path, "
+                                "filename, class names, imports"
+                            ),
                         },
                         "extension": {
                             "type": "string",
@@ -335,7 +367,10 @@ def create_mcp_server(
                 text = _handle_index_status(resolved_root or repo_root, endpoint)
             elif name == "jigyasa_reindex":
                 validated = ReindexInput(**arguments)
-                text = _handle_reindex(validated, resolved_root or repo_root, endpoint, use_embeddings)
+                text = _handle_reindex(
+                    validated, resolved_root or repo_root,
+                    endpoint, use_embeddings,
+                )
             else:
                 text = f"Unknown tool: {name}"
             return [TextContent(type="text", text=truncate_response(text))]
@@ -374,7 +409,10 @@ def _handle_search_symbols(client: JigyasaClient, args: SearchSymbolsInput, cols
     return _format_hits(result, max_results=args.limit, query=args.query)
 
 
-def _handle_search_code(client: JigyasaClient, args: SearchCodeInput, use_embeddings: bool, cols: dict) -> str:
+def _handle_search_code(
+    client: JigyasaClient, args: SearchCodeInput,
+    use_embeddings: bool, cols: dict,
+) -> str:
     query = args.query
     filters = []
 
@@ -431,7 +469,7 @@ def _handle_get_context(args: GetContextInput, repo_root: str) -> str:
         return f"ERROR: File not found: {args.file_path}"
 
     try:
-        with open(abs_path, "r", encoding="utf-8", errors="ignore") as f:
+        with open(abs_path, encoding="utf-8", errors="ignore") as f:
             lines = f.readlines()
     except Exception as e:
         return f"ERROR: Cannot read {args.file_path}: {e}"

@@ -7,7 +7,6 @@ import pytest
 
 from jigyasa_mcp.indexer.pipeline import (
     IndexState,
-    _git_head_sha,
     _is_indexable,
 )
 

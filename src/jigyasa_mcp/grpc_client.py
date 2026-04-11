@@ -9,7 +9,6 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Optional
 
 import grpc
 
@@ -46,10 +45,10 @@ def _load_stubs():
             _pb2 = pb2
             _pb2_grpc = pb2_grpc
             _stubs_loaded = True
-        except ImportError:
+        except ImportError as e:
             raise RuntimeError(
                 "gRPC stubs not generated. Run: python build_proto.py"
-            )
+            ) from e
 
 
 @dataclass
@@ -114,7 +113,7 @@ class JigyasaClient:
         self.endpoint = endpoint
         self.timeout = timeout
         self._lock = threading.Lock()
-        self._channel: Optional[grpc.Channel] = None
+        self._channel: grpc.Channel | None = None
         self._stub = None
         self._breaker = CircuitBreaker()
         self._closing = False
@@ -135,14 +134,14 @@ class JigyasaClient:
                 grpc.channel_ready_future(self._channel).result(
                     timeout=CHANNEL_READY_TIMEOUT_S
                 )
-            except grpc.FutureTimeoutError:
+            except grpc.FutureTimeoutError as e:
                 self._channel.close()
                 self._channel = None
                 self._breaker.record_failure()
                 raise ConnectionError(
                     f"Jigyasa at {self.endpoint} not reachable within "
                     f"{CHANNEL_READY_TIMEOUT_S}s"
-                )
+                ) from e
             self._stub = _pb2_grpc.JigyasaDataPlaneServiceStub(self._channel)
 
     def _reconnect(self):
@@ -287,10 +286,10 @@ class JigyasaClient:
         self,
         collection: str,
         text_query: str = "",
-        filters: Optional[list[dict]] = None,
+        filters: list[dict] | None = None,
         top_k: int = 20,
         include_source: bool = True,
-        vector: Optional[list[float]] = None,
+        vector: list[float] | None = None,
         vector_field: str = "embedding",
         text_weight: float = 0.5,
     ) -> SearchResult:

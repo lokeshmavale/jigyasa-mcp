@@ -8,13 +8,12 @@ import pytest
 from jigyasa_mcp.indexer.chunker import (
     JavaChunker,
     TextChunker,
-    should_skip_file,
-    _extract_package,
+    _estimate_tokens,
     _extract_imports,
     _extract_module,
-    _estimate_tokens,
+    _extract_package,
+    should_skip_file,
 )
-
 
 # --- should_skip_file ---
 

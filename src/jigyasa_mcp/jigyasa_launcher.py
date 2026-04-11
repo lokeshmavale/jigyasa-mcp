@@ -75,7 +75,8 @@ def _auto_build_jigyasa() -> str:
             return ""
 
     # Build
-    gradlew = os.path.join(JIGYASA_CLONE_DIR, "gradlew.bat" if sys.platform == "win32" else "gradlew")
+    gradlew_name = "gradlew.bat" if sys.platform == "win32" else "gradlew"
+    gradlew = os.path.join(JIGYASA_CLONE_DIR, gradlew_name)
     if not os.path.exists(gradlew):
         logger.error(f"gradlew not found at {gradlew}")
         return ""
@@ -171,7 +172,7 @@ def start(
         f.write(str(proc.pid))
 
     # Wait for ready
-    for i in range(20):
+    for _attempt in range(20):
         time.sleep(1)
         if is_running(port):
             logger.info(f"Jigyasa ready on port {port} (PID {proc.pid})")

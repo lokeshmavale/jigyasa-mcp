@@ -1,6 +1,7 @@
 """Allow running as: python -m jigyasa_mcp"""
 
 import sys
+
 from jigyasa_mcp.cli import index_cli, mcp_cli
 
 if __name__ == "__main__":

@@ -7,15 +7,20 @@ import subprocess
 import tempfile
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Optional
 
 from jigyasa_mcp.grpc_client import JigyasaClient
 from jigyasa_mcp.indexer.chunker import (
-    JavaChunker, TextChunker, Symbol, Chunk, FileDoc, should_skip_file,
+    Chunk,
+    FileDoc,
+    JavaChunker,
+    Symbol,
+    TextChunker,
+    should_skip_file,
 )
-from jigyasa_mcp.indexer.embeddings import is_available as embeddings_available, embed_texts
+from jigyasa_mcp.indexer.embeddings import embed_texts
+from jigyasa_mcp.indexer.embeddings import is_available as embeddings_available
 from jigyasa_mcp.schemas.collections import get_schema_json
 
 logger = logging.getLogger(__name__)
@@ -173,7 +178,9 @@ def _git_commit_exists(repo_root: str, sha: str) -> bool:
     return result.returncode == 0 and result.stdout.strip() == "commit"
 
 
-def _git_diff_files(repo_root: str, from_sha: str, to_sha: str = "HEAD") -> list[tuple[str, str, str]]:
+def _git_diff_files(
+    repo_root: str, from_sha: str, to_sha: str = "HEAD",
+) -> list[tuple[str, str, str]]:
     """Get changed files between two commits. Returns (status, old_path, new_path)."""
     result = subprocess.run(
         ["git", "diff", "--name-status", "--find-renames=50%", from_sha, to_sha],
@@ -214,7 +221,7 @@ def _git_modified_unstaged(repo_root: str) -> list[str]:
     return [f for f in result.stdout.strip().split("\n") if f.strip()]
 
 
-def _get_mtime_size(file_path: str) -> Optional[tuple[float, int]]:
+def _get_mtime_size(file_path: str) -> tuple[float, int] | None:
     try:
         stat = os.stat(file_path)
         return (stat.st_mtime, stat.st_size)
@@ -324,7 +331,10 @@ def _ensure_collections(client: JigyasaClient, use_embeddings: bool, prefix: str
     except Exception:
         existing = set()
 
-    names = _collection_names(prefix) if prefix else {"symbols": "symbols", "chunks": "chunks", "files": "files"}
+    names = (
+        _collection_names(prefix) if prefix
+        else {"symbols": "symbols", "chunks": "chunks", "files": "files"}
+    )
     for logical, actual in names.items():
         if actual not in existing:
             # Try to reopen persisted collection first (survives Jigyasa restart)
@@ -394,7 +404,7 @@ class Indexer:
                 continue
 
             try:
-                with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
+                with open(abs_path, encoding="utf-8", errors="replace") as f:
                     source = f.read()
             except Exception as e:
                 stats.errors.append(f"Read error {rel_path}: {e}")
@@ -574,7 +584,7 @@ class Indexer:
                     pass
 
             try:
-                with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
+                with open(abs_path, encoding="utf-8", errors="replace") as f:
                     source = f.read()
             except Exception as e:
                 stats.errors.append(f"Read error {rel_path}: {e}")
@@ -631,7 +641,7 @@ class Indexer:
             texts = [c.content for c in chunks]
             try:
                 vectors = embed_texts(texts, batch_size=EMBEDDING_BATCH_SIZE)
-                for chunk, vec in zip(chunks, vectors):
+                for chunk, vec in zip(chunks, vectors, strict=True):
                     chunk.embedding = vec
                 stats.embeddings_generated += len(vectors)
             except Exception as e:

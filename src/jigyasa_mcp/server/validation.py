@@ -4,10 +4,8 @@ Uses Pydantic for strict validation of all tool inputs.
 """
 
 import os
-from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
-
 
 # Valid enum values
 VALID_SYMBOL_KINDS = frozenset({"class", "interface", "enum", "method", "constructor", "field"})
@@ -21,12 +19,12 @@ MAX_RESPONSE_CHARS = 15_000  # ~3750 tokens, safe for LLM context
 
 class SearchSymbolsInput(BaseModel):
     query: str = Field(..., min_length=1, max_length=MAX_QUERY_LENGTH)
-    kind: Optional[list[str]] = None
-    visibility: Optional[list[str]] = None
-    package_prefix: Optional[str] = None
-    file_pattern: Optional[str] = None
-    extends_or_implements: Optional[str] = None
-    has_annotation: Optional[str] = None
+    kind: list[str] | None = None
+    visibility: list[str] | None = None
+    package_prefix: str | None = None
+    file_pattern: str | None = None
+    extends_or_implements: str | None = None
+    has_annotation: str | None = None
     limit: int = Field(default=30, ge=1, le=MAX_LIMIT)
 
     @field_validator("kind")
@@ -56,17 +54,17 @@ class SearchSymbolsInput(BaseModel):
 
 class SearchCodeInput(BaseModel):
     query: str = Field(..., min_length=1, max_length=MAX_QUERY_LENGTH)
-    file_types: Optional[list[str]] = None
-    module_path: Optional[str] = None
-    enclosing_class: Optional[str] = None
+    file_types: list[str] | None = None
+    module_path: str | None = None
+    enclosing_class: str | None = None
     exclude_tests: bool = True
     limit: int = Field(default=15, ge=1, le=MAX_LIMIT)
 
 
 class SearchFilesInput(BaseModel):
     query: str = Field(..., min_length=1, max_length=MAX_QUERY_LENGTH)
-    extension: Optional[str] = None
-    module: Optional[str] = None
+    extension: str | None = None
+    module: str | None = None
     limit: int = Field(default=20, ge=1, le=MAX_LIMIT)
 
 

@@ -10,9 +10,7 @@ The MCP server uses CWD to auto-detect which repo is active.
 import json
 import logging
 import os
-from dataclasses import dataclass, field, asdict
-from pathlib import Path
-from typing import Optional
+from dataclasses import asdict, dataclass, field
 
 logger = logging.getLogger(__name__)
 
@@ -50,14 +48,14 @@ class RepoRegistry:
             del self.repos[normalized]
             self.save()
 
-    def find_by_cwd(self, cwd: str) -> Optional[RepoEntry]:
+    def find_by_cwd(self, cwd: str) -> RepoEntry | None:
         """Find which registered repo contains the given CWD.
 
         Walks up from CWD to find the best (deepest) match.
         """
         cwd_normalized = os.path.realpath(cwd).replace("\\", "/").rstrip("/")
 
-        best_match: Optional[RepoEntry] = None
+        best_match: RepoEntry | None = None
         best_depth = -1
 
         for path, entry in self.repos.items():
@@ -69,7 +67,7 @@ class RepoRegistry:
 
         return best_match
 
-    def find_by_prefix(self, prefix: str) -> Optional[RepoEntry]:
+    def find_by_prefix(self, prefix: str) -> RepoEntry | None:
         for entry in self.repos.values():
             if entry.prefix == prefix:
                 return entry

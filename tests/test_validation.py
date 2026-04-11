@@ -4,13 +4,12 @@ import pytest
 from pydantic import ValidationError
 
 from jigyasa_mcp.server.validation import (
-    SearchSymbolsInput,
-    SearchCodeInput,
-    SearchFilesInput,
     GetContextInput,
     ReindexInput,
-    validate_path_within_root,
+    SearchCodeInput,
+    SearchSymbolsInput,
     truncate_response,
+    validate_path_within_root,
 )
 
 

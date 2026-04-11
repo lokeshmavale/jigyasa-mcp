@@ -7,9 +7,8 @@ for non-Java files or when AST parsing fails.
 import logging
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 import tree_sitter_java as tsjava
 from tree_sitter import Language, Parser
@@ -70,7 +69,7 @@ class Chunk:
     line_start: int
     line_end: int
     token_count: int
-    embedding: Optional[list[float]] = None
+    embedding: list[float] | None = None
 
 
 @dataclass
@@ -147,7 +146,8 @@ def _get_annotations(node) -> list[str]:
         if child.type == "modifiers":
             for mod_child in child.children:
                 if mod_child.type in ("marker_annotation", "annotation"):
-                    name = mod_child.text.decode("utf-8") if isinstance(mod_child.text, bytes) else mod_child.text
+                    text = mod_child.text
+                    name = text.decode("utf-8") if isinstance(text, bytes) else text
                     annotations.append(name.lstrip("@").split("(")[0])
     return annotations
 
@@ -397,7 +397,9 @@ class JavaChunker:
                         ))
 
                 # Inner classes — recurse
-                elif member.type in ("class_declaration", "interface_declaration", "enum_declaration"):
+                elif member.type in (
+                    "class_declaration", "interface_declaration", "enum_declaration",
+                ):
                     inner_syms, inner_chunks = self._process_class(
                         member, file_path, package, module, source,
                         parent_class=cls_name,
@@ -443,7 +445,10 @@ class JavaChunker:
                 id=f"{file_path}::method_chunk::{qualified_name}",
                 content=full_content,
                 file_path=file_path,
-                symbol_name=qualified_name.split("#")[0] if "#" in qualified_name else qualified_name,
+                symbol_name=(
+                    qualified_name.split("#")[0] if "#" in qualified_name
+                    else qualified_name
+                ),
                 kind="method",
                 module=module,
                 language="java",
@@ -480,7 +485,10 @@ class JavaChunker:
                 id=f"{file_path}::method_chunk::{qualified_name}::part{part}",
                 content=chunk_text,
                 file_path=file_path,
-                symbol_name=qualified_name.split("#")[0] if "#" in qualified_name else qualified_name,
+                symbol_name=(
+                    qualified_name.split("#")[0] if "#" in qualified_name
+                    else qualified_name
+                ),
                 kind="method",
                 module=module,
                 language="java",

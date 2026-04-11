@@ -6,12 +6,14 @@ not installed.
 """
 
 import logging
+import threading
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 _model = None
 _available: Optional[bool] = None
+_model_lock = threading.Lock()
 
 
 def is_available() -> bool:
@@ -35,12 +37,15 @@ def _ensure_model():
     global _model
     if _model is not None:
         return
-    if not is_available():
-        raise RuntimeError("sentence-transformers not installed")
-    from sentence_transformers import SentenceTransformer
-    logger.info("Loading embedding model: all-MiniLM-L6-v2 (23MB, first time may download)")
-    _model = SentenceTransformer("all-MiniLM-L6-v2")
-    logger.info("Embedding model loaded (384 dimensions)")
+    with _model_lock:
+        if _model is not None:  # double-check after acquiring lock
+            return
+        if not is_available():
+            raise RuntimeError("sentence-transformers not installed")
+        from sentence_transformers import SentenceTransformer
+        logger.info("Loading embedding model: all-MiniLM-L6-v2 (23MB, first time may download)")
+        _model = SentenceTransformer("all-MiniLM-L6-v2")
+        logger.info("Embedding model loaded (384 dimensions)")
 
 
 def embed_texts(texts: list[str], batch_size: int = 64) -> list[list[float]]:

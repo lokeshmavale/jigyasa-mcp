@@ -8,18 +8,26 @@ based on signals that BM25 doesn't capture:
   - Recently modified files
 """
 
-import os
-import re
+from dataclasses import dataclass
 from typing import Optional
 
 from jigyasa_mcp.grpc_client import SearchHit, SearchResult
 
 
-# Boost multipliers (applied to BM25 score)
-EXACT_NAME_BOOST = 2.0      # query exactly matches symbol name
-PROD_OVER_TEST_BOOST = 1.3  # src/main/ ranked above src/test/
-TEST_PENALTY = 0.7           # test files ranked lower unless explicitly searching tests
-MAIN_CLASS_BOOST = 1.2       # file's primary class (not inner classes)
+@dataclass
+class RankingConfig:
+    """Configurable boost multipliers for search result reranking."""
+    exact_name_boost: float = 2.0       # query exactly matches symbol name
+    prod_over_test_boost: float = 1.3   # src/main/ ranked above src/test/
+    test_penalty: float = 0.7           # test files ranked lower unless searching tests
+    main_class_boost: float = 1.2       # file's primary class (not inner classes)
+    recent_boost: float = 1.15          # files modified within recent_days
+    recent_days: int = 7                # how many days counts as "recent"
+    min_score: float = 0.0001           # minimum score floor to prevent zero-out
+
+
+# Default config — importable for override
+DEFAULT_RANKING_CONFIG = RankingConfig()
 
 
 def _is_test_file(file_path: str) -> bool:
@@ -49,11 +57,37 @@ def _is_primary_class(hit: SearchHit) -> bool:
     return kind in ("class", "interface", "enum") and not parent
 
 
-def rerank(result: SearchResult, query: str, exclude_tests: bool = False) -> SearchResult:
+def _is_recently_modified(hit: SearchHit, recent_days: int = 7) -> bool:
+    """Check if the file was modified within the last N days.
+
+    Uses the 'last_modified' or 'last_commit_date' field if present in source.
+    """
+    for date_field in ("last_modified", "last_commit_date", "modified_date"):
+        date_str = hit.source.get(date_field, "")
+        if not date_str:
+            continue
+        try:
+            # Parse ISO format: 2026-04-10T12:00:00Z
+            from datetime import datetime, timezone
+            dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+            age_days = (datetime.now(timezone.utc) - dt).days
+            return age_days <= recent_days
+        except (ValueError, TypeError):
+            continue
+    return False
+
+
+def rerank(
+    result: SearchResult,
+    query: str,
+    exclude_tests: bool = False,
+    config: Optional[RankingConfig] = None,
+) -> SearchResult:
     """Apply static ranking boosts to search results."""
     if not result.hits:
         return result
 
+    cfg = config or DEFAULT_RANKING_CONFIG
     boosted_hits: list[tuple[float, SearchHit]] = []
 
     for hit in result.hits:
@@ -62,20 +96,26 @@ def rerank(result: SearchResult, query: str, exclude_tests: bool = False) -> Sea
 
         # Exact name match boost
         if _is_exact_name_match(query, hit):
-            score *= EXACT_NAME_BOOST
+            score *= cfg.exact_name_boost
 
         # Prod vs test
         if _is_test_file(file_path):
             if exclude_tests:
                 continue  # Skip entirely
-            score *= TEST_PENALTY
+            score *= cfg.test_penalty
         else:
-            score *= PROD_OVER_TEST_BOOST
+            score *= cfg.prod_over_test_boost
 
         # Primary class boost
         if _is_primary_class(hit):
-            score *= MAIN_CLASS_BOOST
+            score *= cfg.main_class_boost
 
+        # Recently modified boost
+        if _is_recently_modified(hit, cfg.recent_days):
+            score *= cfg.recent_boost
+
+        # Enforce score floor
+        score = max(cfg.min_score, score)
         boosted_hits.append((score, hit))
 
     # Sort by boosted score descending

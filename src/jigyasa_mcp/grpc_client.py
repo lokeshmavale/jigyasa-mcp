@@ -117,6 +117,8 @@ class JigyasaClient:
         self._channel: Optional[grpc.Channel] = None
         self._stub = None
         self._breaker = CircuitBreaker()
+        self._closing = False
+        self._in_flight = 0
 
     def _ensure_connected(self):
         if not self._breaker.allow_request():
@@ -157,45 +159,54 @@ class JigyasaClient:
     def _call(self, method_name: str, request):
         """Execute a gRPC call with timeout, retries with exponential backoff,
         circuit breaker, and auto-reconnect on transient failures."""
+        if self._closing:
+            raise ConnectionError("Client is shutting down")
         self._ensure_connected()
-        method = getattr(self._stub, method_name)
 
-        last_error = None
-        for attempt in range(MAX_RETRIES + 1):
-            try:
-                response = method(request, timeout=self.timeout)
-                self._breaker.record_success()
-                return response
-            except grpc.RpcError as e:
-                last_error = e
-                code = e.code()
+        with self._lock:
+            self._in_flight += 1
+        try:
+            method = getattr(self._stub, method_name)
 
-                if code == grpc.StatusCode.UNAVAILABLE:
-                    # Server may have restarted — force reconnect
-                    self._reconnect()
+            last_error = None
+            for attempt in range(MAX_RETRIES + 1):
+                try:
+                    response = method(request, timeout=self.timeout)
+                    self._breaker.record_success()
+                    return response
+                except grpc.RpcError as e:
+                    last_error = e
+                    code = e.code()
 
-                if code in _RETRYABLE_CODES and attempt < MAX_RETRIES:
-                    backoff = INITIAL_BACKOFF_S * (2 ** attempt)
-                    logger.warning(
-                        f"gRPC {method_name} failed ({code}), "
-                        f"retry {attempt + 1}/{MAX_RETRIES} in {backoff:.1f}s"
-                    )
-                    time.sleep(backoff)
-                    self._ensure_connected()
-                    method = getattr(self._stub, method_name)
-                    continue
+                    if code == grpc.StatusCode.UNAVAILABLE:
+                        # Server may have restarted — force reconnect
+                        self._reconnect()
 
-                # Non-retryable or exhausted retries
-                self._breaker.record_failure()
-                raise ConnectionError(
-                    f"Jigyasa gRPC error ({method_name}): {code} — {e.details()}"
-                ) from e
+                    if code in _RETRYABLE_CODES and attempt < MAX_RETRIES:
+                        backoff = INITIAL_BACKOFF_S * (2 ** attempt)
+                        logger.warning(
+                            f"gRPC {method_name} failed ({code}), "
+                            f"retry {attempt + 1}/{MAX_RETRIES} in {backoff:.1f}s"
+                        )
+                        time.sleep(backoff)
+                        self._ensure_connected()
+                        method = getattr(self._stub, method_name)
+                        continue
 
-        # Should not reach here, but safety net
-        self._breaker.record_failure()
-        raise ConnectionError(
-            f"Jigyasa gRPC {method_name} failed after {MAX_RETRIES} retries"
-        ) from last_error
+                    # Non-retryable or exhausted retries
+                    self._breaker.record_failure()
+                    raise ConnectionError(
+                        f"Jigyasa gRPC error ({method_name}): {code} — {e.details()}"
+                    ) from e
+
+            # Should not reach here, but safety net
+            self._breaker.record_failure()
+            raise ConnectionError(
+                f"Jigyasa gRPC {method_name} failed after {MAX_RETRIES} retries"
+            ) from last_error
+        finally:
+            with self._lock:
+                self._in_flight -= 1
 
     def health(self) -> dict:
         self._ensure_connected()
@@ -333,7 +344,14 @@ class JigyasaClient:
         return resp.count
 
     def close(self):
-        """Gracefully close the gRPC channel."""
+        """Gracefully close the gRPC channel, waiting for in-flight operations."""
+        self._closing = True
+        # Wait briefly for in-flight operations to complete
+        for _ in range(50):  # up to 5 seconds
+            with self._lock:
+                if self._in_flight == 0:
+                    break
+            time.sleep(0.1)
         with self._lock:
             if self._channel:
                 try:

@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import subprocess
+import tempfile
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field, asdict
@@ -37,28 +38,51 @@ EMBEDDING_BATCH_SIZE = 64
 LOCK_FILE = "index.lock"
 
 
+def _is_pid_alive(pid: int) -> bool:
+    """Check if a process with the given PID is still running (cross-platform)."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except (OSError, PermissionError):
+        return False
+
+
 @contextmanager
 def _file_lock(repo_root: str):
-    """Simple PID-based lock to prevent concurrent index operations."""
-    lock_path = os.path.join(repo_root, STATE_DIR, LOCK_FILE)
-    os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+    """PID-based lock to prevent concurrent index operations.
 
-    # Check if another process holds the lock
-    if os.path.exists(lock_path):
+    Uses atomic O_CREAT|O_EXCL to avoid TOCTOU race conditions.
+    """
+    lock_dir = os.path.join(repo_root, STATE_DIR)
+    os.makedirs(lock_dir, exist_ok=True)
+    lock_path = os.path.join(lock_dir, LOCK_FILE)
+
+    # Attempt atomic lock acquisition
+    try:
+        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, str(os.getpid()).encode())
+        os.close(fd)
+    except FileExistsError:
+        # Lock file exists — check if holder is still alive
         try:
             with open(lock_path) as f:
                 old_pid = int(f.read().strip())
-            # Check if that process is still alive
-            os.kill(old_pid, 0)  # signal 0 = existence check
-            raise RuntimeError(
-                f"Another indexing process is already running (PID {old_pid})"
-            )
+            if _is_pid_alive(old_pid):
+                raise RuntimeError(
+                    f"Another indexing process is already running (PID {old_pid})"
+                )
+            logger.info(f"Removing stale lock from dead PID {old_pid}")
         except (ValueError, OSError):
-            pass  # PID invalid or process dead — stale lock, safe to take
+            logger.info("Removing stale lock file (invalid contents)")
+        # Stale lock — remove and retry atomically
+        try:
+            os.remove(lock_path)
+        except OSError:
+            pass
+        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, str(os.getpid()).encode())
+        os.close(fd)
 
-    # Write our PID
-    with open(lock_path, "w") as f:
-        f.write(str(os.getpid()))
     try:
         yield
     finally:
@@ -81,11 +105,21 @@ class IndexState:
     # mtime, size pairs
 
     def save(self, repo_root: str):
+        """Save state atomically — write to temp file then rename to prevent corruption."""
         state_dir = os.path.join(repo_root, STATE_DIR)
         os.makedirs(state_dir, exist_ok=True)
         path = os.path.join(state_dir, STATE_FILE)
-        with open(path, "w") as f:
-            json.dump(asdict(self), f, indent=2)
+        fd, tmp_path = tempfile.mkstemp(dir=state_dir, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(asdict(self), f, indent=2)
+            os.replace(tmp_path, path)  # atomic on same filesystem
+        except BaseException:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+            raise
 
     @classmethod
     def load(cls, repo_root: str) -> "IndexState":
@@ -186,6 +220,16 @@ def _get_mtime_size(file_path: str) -> Optional[tuple[float, int]]:
         return (stat.st_mtime, stat.st_size)
     except OSError:
         return None
+
+
+def _is_binary_file(file_path: str, check_bytes: int = 8192) -> bool:
+    """Detect binary files by checking for null bytes in the first N bytes."""
+    try:
+        with open(file_path, "rb") as f:
+            chunk = f.read(check_bytes)
+        return b"\x00" in chunk
+    except OSError:
+        return True
 
 
 def _is_indexable(file_path: str) -> bool:
@@ -345,8 +389,12 @@ class Indexer:
                 stats.files_skipped += 1
                 continue
 
+            if _is_binary_file(abs_path):
+                stats.files_skipped += 1
+                continue
+
             try:
-                with open(abs_path, "r", encoding="utf-8", errors="ignore") as f:
+                with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
                     source = f.read()
             except Exception as e:
                 stats.errors.append(f"Read error {rel_path}: {e}")
@@ -511,6 +559,10 @@ class Indexer:
                 stats.files_skipped += 1
                 continue
 
+            if _is_binary_file(abs_path):
+                stats.files_skipped += 1
+                continue
+
             # Delete old docs first (upsert = delete + insert)
             for collection in self.collections.values():
                 try:
@@ -522,7 +574,7 @@ class Indexer:
                     pass
 
             try:
-                with open(abs_path, "r", encoding="utf-8", errors="ignore") as f:
+                with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
                     source = f.read()
             except Exception as e:
                 stats.errors.append(f"Read error {rel_path}: {e}")

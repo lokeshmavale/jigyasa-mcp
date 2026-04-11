@@ -9,7 +9,13 @@ this module can be swapped for server-side highlighting.
 """
 
 import re
-from typing import Optional
+from functools import lru_cache
+
+
+@lru_cache(maxsize=128)
+def _compile_pattern(pattern_key: str) -> re.Pattern:
+    """Cache compiled regex patterns to avoid recompilation per search."""
+    return re.compile(f"({pattern_key})", re.IGNORECASE)
 
 
 def highlight_matches(
@@ -28,9 +34,9 @@ def highlight_matches(
     if not terms:
         return [text[:max_snippet_length]]
 
-    # Build regex pattern matching any query term
+    # Build regex pattern matching any query term (cached)
     pattern = "|".join(re.escape(t) for t in terms)
-    regex = re.compile(f"({pattern})", re.IGNORECASE)
+    regex = _compile_pattern(pattern)
 
     matches = list(regex.finditer(text))
     if not matches:

@@ -358,7 +358,8 @@ def _handle_search_symbols(client: JigyasaClient, args: SearchSymbolsInput, cols
         for kind_val in args.kind:
             filters.append({"field": "kind", "value": kind_val})
     if args.visibility:
-        filters.append({"field": "visibility", "value": args.visibility[0]})
+        for vis_val in args.visibility:
+            filters.append({"field": "visibility", "value": vis_val})
     if args.file_pattern:
         filters.append({"field": "file_path", "value": args.file_pattern})
     if args.extends_or_implements:
@@ -378,7 +379,8 @@ def _handle_search_code(client: JigyasaClient, args: SearchCodeInput, use_embedd
     filters = []
 
     if args.file_types:
-        filters.append({"field": "language", "value": args.file_types[0]})
+        for ft in args.file_types:
+            filters.append({"field": "language", "value": ft})
     if args.module_path:
         filters.append({"field": "module", "value": args.module_path})
     if args.enclosing_class:
@@ -388,8 +390,9 @@ def _handle_search_code(client: JigyasaClient, args: SearchCodeInput, use_embedd
     if use_embeddings and embeddings_available():
         try:
             vector = embed_single(query)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Embedding failed, falling back to text-only search: {e}")
+            vector = None
 
     result = client.query(
         cols["chunks"],

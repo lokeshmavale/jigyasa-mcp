@@ -6,7 +6,7 @@ Uses Pydantic for strict validation of all tool inputs.
 import os
 from typing import Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 # Valid enum values
@@ -83,12 +83,20 @@ class GetContextInput(BaseModel):
         normalized = os.path.normpath(v).replace("\\", "/")
         if normalized.startswith("..") or normalized.startswith("/"):
             raise ValueError(
-                f"Invalid file_path: must be relative and within repo root. Got: {v}"
+                "Invalid file_path: must be relative and within repo root"
             )
         # Block obvious traversal patterns
         if ".." in v.split("/") or ".." in v.split("\\"):
-            raise ValueError(f"Path traversal detected in file_path: {v}")
+            raise ValueError("Path traversal detected in file_path")
         return v
+
+    @model_validator(mode="after")
+    def validate_line_range(self):
+        if self.line_end < self.line_start:
+            raise ValueError(
+                f"line_end ({self.line_end}) must be >= line_start ({self.line_start})"
+            )
+        return self
 
 
 class ReindexInput(BaseModel):

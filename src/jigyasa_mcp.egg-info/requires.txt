@@ -8,8 +8,24 @@ pydantic<3.0,>=2.8.0
 sentence-transformers<5.0,>=3.0.0
 click<9.0,>=8.0.0
 
+[all]
+jigyasa-mcp[languages]
+sentence-transformers<5.0,>=3.0.0
+
 [dev]
 pytest>=8.0
 pytest-asyncio>=0.24
 ruff>=0.8
 mypy>=1.13
+
+[languages]
+tree-sitter-python<1.0,>=0.23.0
+tree-sitter-javascript<1.0,>=0.23.0
+tree-sitter-typescript<1.0,>=0.23.0
+tree-sitter-go<1.0,>=0.23.0
+tree-sitter-c-sharp<1.0,>=0.23.0
+tree-sitter-rust<1.0,>=0.23.0
+tree-sitter-c<1.0,>=0.23.0
+tree-sitter-cpp<1.0,>=0.23.0
+tree-sitter-ruby<1.0,>=0.23.0
+tree-sitter-kotlin<1.0,>=0.23.0

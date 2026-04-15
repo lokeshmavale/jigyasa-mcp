@@ -19,11 +19,21 @@ logging.basicConfig(
 @click.option("--incremental", is_flag=True, help="Only index changed files")
 @click.option("--embeddings", is_flag=True, help="Generate local embeddings (Phase 2)")
 @click.option("--status", is_flag=True, help="Show index status and exit")
-def index_cli(repo: str, endpoint: str, incremental: bool, embeddings: bool, status: bool):
+@click.option(
+    "--auto-install-grammars", is_flag=True,
+    help="Auto-install tree-sitter grammars for detected languages",
+)
+def index_cli(
+    repo: str, endpoint: str, incremental: bool,
+    embeddings: bool, status: bool, auto_install_grammars: bool,
+):
     """Index a Git repository into Jigyasa for AI-powered code search."""
     from jigyasa_mcp.indexer.pipeline import Indexer
 
-    indexer = Indexer(repo, endpoint=endpoint, use_embeddings=embeddings)
+    indexer = Indexer(
+        repo, endpoint=endpoint, use_embeddings=embeddings,
+        auto_install_grammars=auto_install_grammars,
+    )
 
     if status:
         import json

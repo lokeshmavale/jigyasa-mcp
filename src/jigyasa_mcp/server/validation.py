@@ -110,6 +110,33 @@ class ReindexInput(BaseModel):
         return v
 
 
+class SearchCommitsInput(BaseModel):
+    query: str = Field(default="", max_length=MAX_QUERY_LENGTH)
+    author: str = Field(default="", max_length=200)
+    since: str = Field(default="", max_length=50)
+    until: str = Field(default="", max_length=50)
+    file_path: str = Field(default="", max_length=500)
+    limit: int = Field(default=20, ge=1, le=MAX_LIMIT)
+
+
+class GetCommitDiffInput(BaseModel):
+    sha: str = Field(..., min_length=4, max_length=40)
+    context_lines: int = Field(default=3, ge=0, le=20)
+
+    @field_validator("sha")
+    @classmethod
+    def validate_sha(cls, v):
+        if not all(c in "0123456789abcdef" for c in v.lower()):
+            raise ValueError("sha must be a hex string")
+        return v
+
+
+class GetFileHistoryInput(BaseModel):
+    file_path: str = Field(..., min_length=1, max_length=500)
+    limit: int = Field(default=15, ge=1, le=50)
+    include_diff: bool = Field(default=True)
+
+
 def validate_path_within_root(file_path: str, repo_root: str) -> str:
     """Resolve a file path and ensure it stays within repo_root.
 

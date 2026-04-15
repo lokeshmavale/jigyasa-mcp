@@ -21,6 +21,8 @@ from jigyasa_mcp.indexer.chunker import (
 )
 from jigyasa_mcp.indexer.embeddings import embed_texts
 from jigyasa_mcp.indexer.embeddings import is_available as embeddings_available
+from jigyasa_mcp.indexer.generic_ast_chunker import GenericASTChunker
+from jigyasa_mcp.indexer.lang_registry import get_registry
 from jigyasa_mcp.schemas.collections import get_schema_json
 
 logger = logging.getLogger(__name__)
@@ -363,12 +365,14 @@ class Indexer:
         endpoint: str = "localhost:50051",
         use_embeddings: bool = False,
         repo_prefix: str = "",
+        auto_install_grammars: bool = False,
     ):
         self.repo_root = os.path.abspath(repo_root)
         self.client = JigyasaClient(endpoint=endpoint, timeout=30.0)
         self.use_embeddings = use_embeddings and embeddings_available()
         self.java_chunker = JavaChunker()
         self.text_chunker = TextChunker()
+        self.lang_registry = get_registry(auto_install=auto_install_grammars)
         self.prefix = repo_prefix or _derive_repo_prefix(repo_root)
         self.collections = _collection_names(self.prefix)
 
@@ -386,6 +390,9 @@ class Indexer:
 
         all_files = _git_ls_files(self.repo_root)
         head_sha = _git_head_sha(self.repo_root)
+
+        # Auto-detect languages and install missing grammars
+        self._auto_detect_and_install_grammars(all_files)
 
         symbol_batch: list[dict] = []
         chunk_batch: list[Chunk] = []
@@ -417,10 +424,20 @@ class Indexer:
                 symbol_batch.extend([_symbol_to_doc(s) for s in symbols])
                 chunk_batch.extend(chunks)
             else:
-                chunks, file_doc = self.text_chunker.chunk_file(
-                    abs_path, source, self.repo_root, head_sha
+                result = self._try_ast_parse(
+                    abs_path, source, head_sha,
                 )
-                chunk_batch.extend(chunks)
+                if result is not None:
+                    symbols, chunks, file_doc = result
+                    symbol_batch.extend(
+                        [_symbol_to_doc(s) for s in symbols]
+                    )
+                    chunk_batch.extend(chunks)
+                else:
+                    chunks, file_doc = self.text_chunker.chunk_file(
+                        abs_path, source, self.repo_root, head_sha
+                    )
+                    chunk_batch.extend(chunks)
 
             file_batch.append(_file_to_doc(file_doc))
 
@@ -597,10 +614,20 @@ class Indexer:
                 symbol_batch.extend([_symbol_to_doc(s) for s in symbols])
                 chunk_batch.extend(chunks)
             else:
-                chunks, file_doc = self.text_chunker.chunk_file(
-                    abs_path, source, self.repo_root, head_sha
+                result = self._try_ast_parse(
+                    abs_path, source, head_sha,
                 )
-                chunk_batch.extend(chunks)
+                if result is not None:
+                    symbols, chunks, file_doc = result
+                    symbol_batch.extend(
+                        [_symbol_to_doc(s) for s in symbols]
+                    )
+                    chunk_batch.extend(chunks)
+                else:
+                    chunks, file_doc = self.text_chunker.chunk_file(
+                        abs_path, source, self.repo_root, head_sha
+                    )
+                    chunk_batch.extend(chunks)
 
             file_batch.append(_file_to_doc(file_doc))
 
@@ -647,9 +674,96 @@ class Indexer:
             except Exception as e:
                 logger.warning(f"Embedding generation failed, indexing without: {e}")
 
-        docs = [_chunk_to_doc(c) for c in chunks]
-        self.client.index_batch(self.collections["chunks"], docs)
-        stats.chunks_indexed += len(chunks)
+    def _try_ast_parse(
+        self,
+        abs_path: str,
+        source: str,
+        commit_sha: str,
+    ) -> tuple[list[Symbol], list[Chunk], FileDoc] | None:
+        """Try to parse a file with GenericASTChunker via the language registry.
+
+        Returns (symbols, chunks, file_doc) if a grammar is available,
+        or None to fall back to TextChunker.
+        """
+        parser, profile = self.lang_registry.get_parser(abs_path)
+        if parser is None or profile is None:
+            return None
+        try:
+            chunker = GenericASTChunker(parser, profile)
+            return chunker.parse_file(
+                abs_path, source, self.repo_root, commit_sha,
+            )
+        except Exception as e:
+            rel = os.path.relpath(abs_path, self.repo_root)
+            logger.warning(
+                f"AST parse failed for {rel} ({profile.name}), "
+                f"falling back to text chunker: {e}"
+            )
+            return None
+
+    def _auto_detect_and_install_grammars(
+        self, file_paths: list[str],
+    ) -> None:
+        """Scan repo files to detect languages and auto-install missing grammars.
+
+        This makes the MCP server self-adaptive — it inspects what languages
+        exist in the repo and ensures grammars are available for AST parsing.
+        """
+        from collections import Counter
+        from pathlib import Path as PurePath
+
+        from jigyasa_mcp.indexer.lang_registry import ALL_PROFILES
+
+        # Count files per extension
+        ext_counts: Counter[str] = Counter()
+        for fp in file_paths:
+            ext = PurePath(fp).suffix.lower()
+            if ext:
+                ext_counts[ext] += 1
+
+        # Find languages with files but no grammar installed
+        missing = []
+        for profile in ALL_PROFILES:
+            file_count = sum(ext_counts.get(ext, 0) for ext in profile.extensions)
+            if file_count == 0:
+                continue
+            # Check if grammar is available
+            parser, _ = self.lang_registry.get_parser(
+                f"test{profile.extensions[0]}",
+            )
+            if parser is None and profile.name not in self.lang_registry._load_failed:
+                # Grammar not installed but not failed — means it wasn't tried
+                pass
+            if parser is None:
+                missing.append((profile, file_count))
+
+        if not missing:
+            return
+
+        # Log what we found
+        for profile, count in missing:
+            logger.info(
+                f"Detected {count} {profile.name} files but grammar "
+                f"not installed: {profile.pip_package}"
+            )
+
+        # Auto-install if enabled
+        if self.lang_registry.auto_install:
+            for profile, count in missing:
+                logger.info(
+                    f"Auto-installing {profile.pip_package} "
+                    f"for {count} {profile.name} files..."
+                )
+                parser = self.lang_registry._install_and_load(profile)
+                if parser:
+                    self.lang_registry._parsers[profile.name] = parser
+        else:
+            names = [p.pip_package for p, _ in missing]
+            logger.info(
+                f"To enable AST parsing for these languages, run:\n"
+                f"  pip install {' '.join(names)}\n"
+                f"Or use: jigyasa-index --auto-install-grammars"
+            )
 
     def get_status(self) -> dict:
         """Get current index status."""
@@ -675,5 +789,6 @@ class Indexer:
                 "files": state.total_files,
             },
             "collections": collections,
+            "languages": self.lang_registry.status(),
         }
 

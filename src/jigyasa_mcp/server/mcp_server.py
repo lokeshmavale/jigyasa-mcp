@@ -20,6 +20,14 @@ from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 from pydantic import ValidationError
 
+from jigyasa_mcp.git_history import (
+    format_commit_diff,
+    format_commits,
+    format_file_history,
+    get_commit_diff,
+    get_file_history,
+    search_commits,
+)
 from jigyasa_mcp.grpc_client import JigyasaClient
 from jigyasa_mcp.indexer.embeddings import embed_single
 from jigyasa_mcp.indexer.embeddings import is_available as embeddings_available
@@ -27,9 +35,12 @@ from jigyasa_mcp.indexer.pipeline import Indexer
 from jigyasa_mcp.server.highlighter import highlight_search_result
 from jigyasa_mcp.server.reranker import rerank
 from jigyasa_mcp.server.validation import (
+    GetCommitDiffInput,
     GetContextInput,
+    GetFileHistoryInput,
     ReindexInput,
     SearchCodeInput,
+    SearchCommitsInput,
     SearchFilesInput,
     SearchSymbolsInput,
     truncate_response,
@@ -343,6 +354,113 @@ def create_mcp_server(
                     },
                 },
             ),
+            Tool(
+                name="jigyasa_search_commits",
+                description=(
+                    "Search git commit history by keyword, author, date range, "
+                    "or file path. Use to find when/why code changed, who made "
+                    "changes, or what happened in a time period."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Search text in commit messages",
+                        },
+                        "author": {
+                            "type": "string",
+                            "description": "Filter by author name or email",
+                        },
+                        "since": {
+                            "type": "string",
+                            "description": (
+                                "Start date (ISO 8601 or relative, "
+                                "e.g. '7 days ago', '2024-01-01')"
+                            ),
+                        },
+                        "until": {
+                            "type": "string",
+                            "description": "End date",
+                        },
+                        "file_path": {
+                            "type": "string",
+                            "description": (
+                                "Only commits that modified this file"
+                            ),
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Max results (default: 20)",
+                            "default": 20,
+                        },
+                    },
+                },
+            ),
+            Tool(
+                name="jigyasa_commit_diff",
+                description=(
+                    "Get the full diff for a specific commit — metadata, "
+                    "changed files, and line-level code changes. Use when "
+                    "you need to see exactly what changed in a commit."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "sha": {
+                            "type": "string",
+                            "description": (
+                                "Commit SHA (full or abbreviated, "
+                                "min 4 chars)"
+                            ),
+                        },
+                        "context_lines": {
+                            "type": "integer",
+                            "description": (
+                                "Lines of context around changes "
+                                "(default: 3)"
+                            ),
+                            "default": 3,
+                        },
+                    },
+                    "required": ["sha"],
+                },
+            ),
+            Tool(
+                name="jigyasa_file_history",
+                description=(
+                    "Trace how a file evolved over time — all commits "
+                    "that modified it with optional diffs. Follows "
+                    "renames. Use to understand why code looks the way "
+                    "it does."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "file_path": {
+                            "type": "string",
+                            "description": (
+                                "Relative file path to trace"
+                            ),
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": (
+                                "Max commits to return (default: 15)"
+                            ),
+                            "default": 15,
+                        },
+                        "include_diff": {
+                            "type": "boolean",
+                            "description": (
+                                "Include diffs per commit (default: true)"
+                            ),
+                            "default": True,
+                        },
+                    },
+                    "required": ["file_path"],
+                },
+            ),
         ]
 
     @server.call_tool()
@@ -371,6 +489,50 @@ def create_mcp_server(
                     validated, resolved_root or repo_root,
                     endpoint, use_embeddings,
                 )
+            elif name == "jigyasa_search_commits":
+                validated = SearchCommitsInput(**arguments)
+                root = resolved_root or repo_root
+                if not root:
+                    text = "ERROR: No repository configured"
+                else:
+                    commits = search_commits(
+                        root,
+                        query=validated.query,
+                        author=validated.author,
+                        since=validated.since,
+                        until=validated.until,
+                        file_path=validated.file_path,
+                        max_results=validated.limit,
+                    )
+                    text = format_commits(commits)
+            elif name == "jigyasa_commit_diff":
+                validated = GetCommitDiffInput(**arguments)
+                root = resolved_root or repo_root
+                if not root:
+                    text = "ERROR: No repository configured"
+                else:
+                    result = get_commit_diff(
+                        root, validated.sha,
+                        context_lines=validated.context_lines,
+                    )
+                    if result:
+                        text = format_commit_diff(result)
+                    else:
+                        text = f"ERROR: Commit {validated.sha} not found"
+            elif name == "jigyasa_file_history":
+                validated = GetFileHistoryInput(**arguments)
+                root = resolved_root or repo_root
+                if not root:
+                    text = "ERROR: No repository configured"
+                else:
+                    entries = get_file_history(
+                        root, validated.file_path,
+                        max_results=validated.limit,
+                        include_diff=validated.include_diff,
+                    )
+                    text = format_file_history(
+                        entries, validated.file_path,
+                    )
             else:
                 text = f"Unknown tool: {name}"
             return [TextContent(type="text", text=truncate_response(text))]
@@ -500,7 +662,10 @@ def _handle_index_status(repo_root: str, endpoint: str) -> str:
 def _handle_reindex(args: ReindexInput, repo_root: str, endpoint: str, use_embeddings: bool) -> str:
     if not repo_root:
         return "ERROR: No repository configured"
-    indexer = Indexer(repo_root, endpoint=endpoint, use_embeddings=use_embeddings)
+    indexer = Indexer(
+        repo_root, endpoint=endpoint, use_embeddings=use_embeddings,
+        auto_install_grammars=True,
+    )
 
     if args.mode == "full":
         stats = indexer.full_index()

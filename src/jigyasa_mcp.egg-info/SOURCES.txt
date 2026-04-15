@@ -18,6 +18,8 @@ src/jigyasa_mcp.egg-info/top_level.txt
 src/jigyasa_mcp/indexer/__init__.py
 src/jigyasa_mcp/indexer/chunker.py
 src/jigyasa_mcp/indexer/embeddings.py
+src/jigyasa_mcp/indexer/generic_ast_chunker.py
+src/jigyasa_mcp/indexer/lang_registry.py
 src/jigyasa_mcp/indexer/pipeline.py
 src/jigyasa_mcp/schemas/__init__.py
 src/jigyasa_mcp/schemas/collections.py

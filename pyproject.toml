@@ -26,6 +26,22 @@ dev = [
     "ruff>=0.8",
     "mypy>=1.13",
 ]
+languages = [
+    "tree-sitter-python>=0.23.0,<1.0",
+    "tree-sitter-javascript>=0.23.0,<1.0",
+    "tree-sitter-typescript>=0.23.0,<1.0",
+    "tree-sitter-go>=0.23.0,<1.0",
+    "tree-sitter-c-sharp>=0.23.0,<1.0",
+    "tree-sitter-rust>=0.23.0,<1.0",
+    "tree-sitter-c>=0.23.0,<1.0",
+    "tree-sitter-cpp>=0.23.0,<1.0",
+    "tree-sitter-ruby>=0.23.0,<1.0",
+    "tree-sitter-kotlin>=0.23.0,<1.0",
+]
+all = [
+    "jigyasa-mcp[languages]",
+    "sentence-transformers>=3.0.0,<5.0",
+]
 
 [project.scripts]
 jigyasa-index = "jigyasa_mcp.cli:index_cli"

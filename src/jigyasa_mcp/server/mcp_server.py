@@ -20,6 +20,14 @@ from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 from pydantic import ValidationError
 
+from jigyasa_mcp.code_intel import (
+    dependency_graph,
+    find_implementations,
+    find_references,
+    format_dependency_graph,
+    format_implementations,
+    format_references,
+)
 from jigyasa_mcp.git_history import (
     format_commit_diff,
     format_commits,
@@ -35,6 +43,9 @@ from jigyasa_mcp.indexer.pipeline import Indexer
 from jigyasa_mcp.server.highlighter import highlight_search_result
 from jigyasa_mcp.server.reranker import rerank
 from jigyasa_mcp.server.validation import (
+    DependencyGraphInput,
+    FindImplementationsInput,
+    FindReferencesInput,
     GetCommitDiffInput,
     GetContextInput,
     GetFileHistoryInput,
@@ -461,6 +472,77 @@ def create_mcp_server(
                     "required": ["file_path"],
                 },
             ),
+            Tool(
+                name="jigyasa_find_implementations",
+                description=(
+                    "Find all classes that implement an interface or "
+                    "extend a class. Use for questions like 'what "
+                    "implements ActionFilter?', 'what extends "
+                    "AbstractTransportAction?'."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "symbol_name": {
+                            "type": "string",
+                            "description": (
+                                "Interface or class name to find "
+                                "implementations of"
+                            ),
+                        },
+                    },
+                    "required": ["symbol_name"],
+                },
+            ),
+            Tool(
+                name="jigyasa_find_references",
+                description=(
+                    "Find all symbols that reference a given type — "
+                    "who uses this class, who imports it, who has it "
+                    "as a field type. Use for impact analysis and "
+                    "understanding usage patterns."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "symbol_name": {
+                            "type": "string",
+                            "description": (
+                                "Type/class name to find references to"
+                            ),
+                        },
+                    },
+                    "required": ["symbol_name"],
+                },
+            ),
+            Tool(
+                name="jigyasa_dependency_graph",
+                description=(
+                    "Build a dependency graph for a file — what it "
+                    "imports, what depends on it, and the classes it "
+                    "defines. Use for refactoring impact analysis, "
+                    "understanding module boundaries, and change "
+                    "impact assessment."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "file_path": {
+                            "type": "string",
+                            "description": "File path to analyze",
+                        },
+                        "depth": {
+                            "type": "integer",
+                            "description": (
+                                "Traversal depth: 1=direct deps, "
+                                "2=transitive (default: 1)"
+                            ),
+                            "default": 1,
+                        },
+                    },
+                    "required": ["file_path"],
+                },
+            ),
         ]
 
     @server.call_tool()
@@ -533,6 +615,30 @@ def create_mcp_server(
                     text = format_file_history(
                         entries, validated.file_path,
                     )
+            elif name == "jigyasa_find_implementations":
+                validated = FindImplementationsInput(**arguments)
+                refs = find_implementations(
+                    client, validated.symbol_name, cols["symbols"],
+                )
+                text = format_implementations(
+                    refs, validated.symbol_name,
+                )
+            elif name == "jigyasa_find_references":
+                validated = FindReferencesInput(**arguments)
+                refs = find_references(
+                    client, validated.symbol_name, cols["symbols"],
+                )
+                text = format_references(
+                    refs, validated.symbol_name,
+                )
+            elif name == "jigyasa_dependency_graph":
+                validated = DependencyGraphInput(**arguments)
+                graph = dependency_graph(
+                    client, validated.file_path,
+                    cols["files"], cols["symbols"],
+                    depth=validated.depth,
+                )
+                text = format_dependency_graph(graph)
             else:
                 text = f"Unknown tool: {name}"
             return [TextContent(type="text", text=truncate_response(text))]

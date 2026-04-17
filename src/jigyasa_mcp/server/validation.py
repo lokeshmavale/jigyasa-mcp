@@ -113,6 +113,31 @@ class ReindexInput(BaseModel):
 class SearchCommitsInput(BaseModel):
     query: str = Field(default="", max_length=MAX_QUERY_LENGTH)
     author: str = Field(default="", max_length=200)
+
+
+class FindImplementationsInput(BaseModel):
+    symbol_name: str = Field(
+        ..., min_length=1, max_length=MAX_QUERY_LENGTH,
+        description="Class or interface name to find implementations of",
+    )
+
+
+class FindReferencesInput(BaseModel):
+    symbol_name: str = Field(
+        ..., min_length=1, max_length=MAX_QUERY_LENGTH,
+        description="Type/class name to find references to",
+    )
+
+
+class DependencyGraphInput(BaseModel):
+    file_path: str = Field(
+        ..., min_length=1, max_length=500,
+        description="File path to analyze dependencies for",
+    )
+    depth: int = Field(
+        default=1, ge=1, le=3,
+        description="How many hops to traverse (1=direct, 2=transitive)",
+    )
     since: str = Field(default="", max_length=50)
     until: str = Field(default="", max_length=50)
     file_path: str = Field(default="", max_length=500)

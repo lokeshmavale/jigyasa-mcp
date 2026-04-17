@@ -6,11 +6,15 @@ import sys
 
 import click
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%H:%M:%S",
-)
+LOG_LEVELS = ["DEBUG", "INFO", "WARNING", "ERROR"]
+
+
+def _setup_logging(level: str):
+    logging.basicConfig(
+        level=getattr(logging, level.upper(), logging.INFO),
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
 
 
 @click.command("jigyasa-index")
@@ -23,11 +27,17 @@ logging.basicConfig(
     "--auto-install-grammars", is_flag=True,
     help="Auto-install tree-sitter grammars for detected languages",
 )
+@click.option(
+    "--log-level", default="INFO", type=click.Choice(LOG_LEVELS, case_sensitive=False),
+    help="Log level (default: INFO)",
+)
 def index_cli(
     repo: str, endpoint: str, incremental: bool,
     embeddings: bool, status: bool, auto_install_grammars: bool,
+    log_level: str,
 ):
     """Index a Git repository into Jigyasa for AI-powered code search."""
+    _setup_logging(log_level)
     from jigyasa_mcp.indexer.pipeline import Indexer
 
     indexer = Indexer(
@@ -70,8 +80,16 @@ def index_cli(
     help="Run connectivity self-test and exit",
 )
 @click.option("--auto-start", is_flag=True, help="Auto-start Jigyasa server if not running")
-def mcp_cli(endpoint: str, repo: str, embeddings: bool, run_self_test: bool, auto_start: bool):
+@click.option(
+    "--log-level", default="INFO", type=click.Choice(LOG_LEVELS, case_sensitive=False),
+    help="Log level (default: INFO)",
+)
+def mcp_cli(
+    endpoint: str, repo: str, embeddings: bool,
+    run_self_test: bool, auto_start: bool, log_level: str,
+):
     """Start the Jigyasa MCP server for GitHub Copilot CLI integration."""
+    _setup_logging(log_level)
     if auto_start:
         from jigyasa_mcp.jigyasa_launcher import is_running, start
         port = int(endpoint.split(":")[-1]) if ":" in endpoint else 50051

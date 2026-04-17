@@ -75,6 +75,9 @@ def _run_git(
     except FileNotFoundError:
         logger.error("git not found on PATH")
         return None
+    except (NotADirectoryError, OSError) as e:
+        logger.warning(f"git failed — invalid repo path: {e}")
+        return None
 
 
 def _parse_log_entry(entry: str) -> CommitInfo | None:

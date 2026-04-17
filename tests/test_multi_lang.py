@@ -36,10 +36,13 @@ class TestLanguageRegistry:
 
     def test_detects_typescript(self):
         registry = LanguageRegistry()
-        for ext in (".ts", ".tsx"):
-            profile = registry.get_profile(f"component{ext}")
-            assert profile is not None
-            assert profile.name == "typescript"
+        ts_profile = registry.get_profile("component.ts")
+        assert ts_profile is not None
+        assert ts_profile.name == "typescript"
+
+        tsx_profile = registry.get_profile("component.tsx")
+        assert tsx_profile is not None
+        assert tsx_profile.name == "tsx"
 
     def test_detects_go(self):
         registry = LanguageRegistry()

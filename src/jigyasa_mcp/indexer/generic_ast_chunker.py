@@ -119,6 +119,69 @@ def _find_parent_class_name(node, profile: LanguageProfile) -> str:
     return ""
 
 
+def _extract_base_classes(node, profile: LanguageProfile) -> list[str]:
+    """Extract parent/base classes from a class declaration.
+
+    Handles different AST patterns:
+      - Python: class Foo(Bar, Baz) → argument_list with identifiers
+      - Java: class Foo extends Bar implements Baz → superclass/super_interfaces
+      - JS/TS: class Foo extends Bar → class_heritage
+      - Go: type Foo struct { Bar } → embedded fields
+    """
+    bases = []
+    for child in node.children:
+        # Python: argument_list contains base classes
+        if child.type == "argument_list":
+            for arg in child.children:
+                if arg.type in ("identifier", "attribute", "dotted_name"):
+                    text = _get_text(arg)
+                    if text not in ("(", ")", ",", "object"):
+                        bases.append(text)
+        # Java: superclass / super_interfaces
+        if child.type == "superclass":
+            text = _get_text(child).replace("extends", "").strip()
+            if text:
+                bases.append(text)
+        if child.type == "super_interfaces":
+            text = _get_text(child).replace("implements", "").strip()
+            bases.extend(i.strip() for i in text.split(",") if i.strip())
+        # JS/TS: class_heritage
+        if child.type == "class_heritage":
+            for hchild in child.children:
+                if hchild.type in ("identifier", "type_identifier"):
+                    bases.append(_get_text(hchild))
+        # C#/Kotlin: base_list
+        if child.type in ("base_list", "delegation_specifiers"):
+            for item in child.children:
+                name = _find_name(item, profile)
+                if name:
+                    bases.append(name)
+    return bases
+
+
+def _extract_type_refs_generic(node) -> list[str]:
+    """Walk AST subtree to collect all type identifier references."""
+    types = set()
+    _walk_type_refs(node, types)
+    # Filter out common built-in types
+    builtins = {
+        "str", "int", "float", "bool", "none", "list", "dict", "set",
+        "tuple", "type", "object", "string", "number", "boolean",
+        "void", "any", "null", "undefined", "self", "cls",
+    }
+    return sorted(t for t in types if t.lower() not in builtins)
+
+
+def _walk_type_refs(node, types: set):
+    """Recursively collect type identifiers."""
+    if node.type in ("type_identifier", "type"):
+        text = _get_text(node).strip()
+        if text and text[0].isupper():  # Likely a type, not a keyword
+            types.add(text)
+    for child in node.children:
+        _walk_type_refs(child, types)
+
+
 class GenericASTChunker:
     """Language-agnostic AST chunker driven by a LanguageProfile.
 
@@ -216,6 +279,17 @@ class GenericASTChunker:
             decorators = _find_decorators(child, self.profile)
             body_text = _get_text(child)
 
+            # Extract inheritance and type references
+            base_classes = _extract_base_classes(child, self.profile)
+            type_refs = _extract_type_refs_generic(child)
+
+            # Separate extends vs implements (first base = extends, rest = implements)
+            extends = base_classes[0] if base_classes else ""
+            implements = ", ".join(base_classes[1:]) if len(base_classes) > 1 else ""
+            # For languages without the extends/implements distinction, put all in extends
+            if kind in ("class",) and not implements and len(base_classes) > 1:
+                implements = ", ".join(base_classes[1:])
+
             # Detect if function inside class → method
             actual_kind = kind
             if kind == "function" and parent_class:
@@ -232,14 +306,14 @@ class GenericASTChunker:
                 package=package,
                 module=module,
                 parent_class=parent_class,
-                implements="",
-                extends_class="",
+                implements=implements,
+                extends_class=extends,
                 annotations=", ".join(decorators),
                 line_start=child.start_point[0] + 1,
                 line_end=child.end_point[0] + 1,
                 body_preview=body_text[:200],
                 imports="",
-                type_references="",
+                type_references=", ".join(type_refs[:50]),
             ))
 
             # Create chunk for the declaration body

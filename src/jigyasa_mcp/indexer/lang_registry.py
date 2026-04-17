@@ -31,6 +31,10 @@ class LanguageProfile:
     extensions: list[str]
     pip_package: str
     module_name: str  # Python module to import
+    # Function name to call on the module to get the language.
+    # Default is "language". Some packages (e.g., tree-sitter-typescript)
+    # expose separate functions like "language_typescript" / "language_tsx".
+    language_func: str = "language"
 
     # AST node types → symbol kind mappings
     class_nodes: list[str] = field(default_factory=list)
@@ -103,9 +107,30 @@ PYTHON_PROFILE = LanguageProfile(
 
 TYPESCRIPT_PROFILE = LanguageProfile(
     name="typescript",
-    extensions=[".ts", ".tsx"],
+    extensions=[".ts"],
     pip_package="tree-sitter-typescript",
     module_name="tree_sitter_typescript",
+    language_func="language_typescript",
+    class_nodes=["class_declaration"],
+    function_nodes=["function_declaration", "arrow_function"],
+    method_nodes=["method_definition"],
+    field_nodes=["public_field_definition", "property_signature"],
+    constructor_nodes=[],
+    interface_nodes=["interface_declaration"],
+    enum_nodes=["enum_declaration"],
+    decorator_node_types=["decorator"],
+    comment_node_types=["comment"],
+    name_node_type="identifier",
+    import_pattern=r"""import\s+.*?from\s+['"]([^'"]+)['"]""",
+    package_pattern="",
+)
+
+TSX_PROFILE = LanguageProfile(
+    name="tsx",
+    extensions=[".tsx"],
+    pip_package="tree-sitter-typescript",
+    module_name="tree_sitter_typescript",
+    language_func="language_tsx",
     class_nodes=["class_declaration"],
     function_nodes=["function_declaration", "arrow_function"],
     method_nodes=["method_definition"],
@@ -308,9 +333,9 @@ JAVA_PROFILE = LanguageProfile(
 
 # All profiles in load order
 ALL_PROFILES = [
-    JAVA_PROFILE, PYTHON_PROFILE, TYPESCRIPT_PROFILE, JAVASCRIPT_PROFILE,
-    GO_PROFILE, CSHARP_PROFILE, RUST_PROFILE, C_PROFILE, CPP_PROFILE,
-    RUBY_PROFILE, KOTLIN_PROFILE, SCALA_PROFILE,
+    JAVA_PROFILE, PYTHON_PROFILE, TYPESCRIPT_PROFILE, TSX_PROFILE,
+    JAVASCRIPT_PROFILE, GO_PROFILE, CSHARP_PROFILE, RUST_PROFILE,
+    C_PROFILE, CPP_PROFILE, RUBY_PROFILE, KOTLIN_PROFILE, SCALA_PROFILE,
 ]
 
 
@@ -364,7 +389,8 @@ class LanguageRegistry:
         """Load a tree-sitter parser for a language profile."""
         try:
             mod = importlib.import_module(profile.module_name)
-            lang = Language(mod.language())
+            lang_func = getattr(mod, profile.language_func)
+            lang = Language(lang_func())
             parser = Parser(lang)
             logger.info(f"Loaded tree-sitter grammar: {profile.name}")
             return parser
@@ -400,7 +426,8 @@ class LanguageRegistry:
                 stderr=subprocess.DEVNULL,
             )
             mod = importlib.import_module(profile.module_name)
-            lang = Language(mod.language())
+            lang_func = getattr(mod, profile.language_func)
+            lang = Language(lang_func())
             parser = Parser(lang)
             logger.info(
                 f"Installed and loaded tree-sitter grammar: {profile.name}"

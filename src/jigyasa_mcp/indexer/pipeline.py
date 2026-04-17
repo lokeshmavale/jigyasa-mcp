@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import subprocess
+import sys
 import tempfile
 import time
 from contextlib import contextmanager
@@ -47,11 +48,28 @@ LOCK_FILE = "index.lock"
 
 def _is_pid_alive(pid: int) -> bool:
     """Check if a process with the given PID is still running (cross-platform)."""
-    try:
-        os.kill(pid, 0)
-        return True
-    except (OSError, PermissionError):
-        return False
+    if sys.platform == "win32":
+        # On Windows, os.kill(pid, 0) actually terminates the process.
+        # Use ctypes to call OpenProcess instead.
+        try:
+            import ctypes
+            kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            handle = kernel32.OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION, False, pid,
+            )
+            if handle:
+                kernel32.CloseHandle(handle)
+                return True
+            return False
+        except Exception:
+            return False
+    else:
+        try:
+            os.kill(pid, 0)
+            return True
+        except (OSError, PermissionError):
+            return False
 
 
 @contextmanager
@@ -86,9 +104,14 @@ def _file_lock(repo_root: str):
             os.remove(lock_path)
         except OSError:
             pass
-        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        os.write(fd, str(os.getpid()).encode())
-        os.close(fd)
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, str(os.getpid()).encode())
+            os.close(fd)
+        except FileExistsError as exc:
+            raise RuntimeError(
+                "Failed to acquire index lock — another process took it"
+            ) from exc
 
     try:
         yield
@@ -133,8 +156,15 @@ class IndexState:
         path = os.path.join(repo_root, STATE_DIR, STATE_FILE)
         if not os.path.exists(path):
             return cls()
-        with open(path) as f:
-            data = json.load(f)
+        try:
+            with open(path) as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, ValueError, OSError) as e:
+            logger.warning(f"Corrupted state file, resetting: {e}")
+            return cls()
+        if not isinstance(data, dict):
+            logger.warning("State file is not a JSON object, resetting")
+            return cls()
         state = cls()
         for k, v in data.items():
             if hasattr(state, k):
@@ -673,6 +703,10 @@ class Indexer:
                 stats.embeddings_generated += len(vectors)
             except Exception as e:
                 logger.warning(f"Embedding generation failed, indexing without: {e}")
+
+        docs = [_chunk_to_doc(c) for c in chunks]
+        self.client.index_batch(self.collections["chunks"], docs)
+        stats.chunks_indexed += len(chunks)
 
     def _try_ast_parse(
         self,

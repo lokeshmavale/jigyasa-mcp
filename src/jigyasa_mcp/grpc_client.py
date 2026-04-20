@@ -342,6 +342,87 @@ class JigyasaClient:
         resp = self._call("Count", _pb2.CountRequest(collection=collection))
         return resp.count
 
+    def autocomplete(
+        self,
+        collection: str,
+        prefix: str,
+        fields: list[str] | None = None,
+        limit: int = 10,
+        fuzzy: bool = False,
+    ) -> list[dict]:
+        """Get autocomplete suggestions for a prefix.
+
+        Returns list of {"text": str, "score": float, "field": str, "highlighted": str}.
+        """
+        _load_stubs()
+        req = _pb2.AutocompleteRequest(
+            collection=collection,
+            text=prefix,
+            limit=limit,
+            fuzzy=fuzzy,
+        )
+        if fields:
+            req.fields.extend(fields)
+
+        resp = self._call("Autocomplete", req)
+        return [
+            {
+                "text": s.text,
+                "score": s.score,
+                "field": s.field,
+                "highlighted": s.highlighted,
+                "source": s.source,
+            }
+            for s in resp.suggestions
+        ]
+
+    def query_with_facets(
+        self,
+        collection: str,
+        text_query: str = "",
+        filters: list[dict] | None = None,
+        facets: list[str] | None = None,
+        top_k: int = 20,
+        include_source: bool = True,
+    ) -> dict:
+        """Search with facet counts. Returns {"hits": [...], "facets": {field: {value: count}}}."""
+        _load_stubs()
+        request = _pb2.QueryRequest(
+            collection=collection,
+            text_query=text_query,
+            top_k=top_k,
+            include_source=include_source,
+        )
+        if filters:
+            request.filters.extend(self._build_filters(filters))
+        if facets:
+            for f in facets:
+                request.facets.append(_pb2.FacetRequest(field=f, count=10))
+
+        resp = self._call("Query", request)
+
+        hits = []
+        for h in resp.hits:
+            source = {}
+            if h.source:
+                try:
+                    source = json.loads(h.source)
+                except json.JSONDecodeError:
+                    source = {"_raw": h.source}
+            hits.append(SearchHit(score=h.score, doc_id=h.doc_id, source=source))
+
+        facet_results = {}
+        for name, facet in resp.facets.items():
+            facet_results[name] = {
+                bucket.value: bucket.count for bucket in facet.buckets
+            }
+
+        return {
+            "total_hits": resp.total_hits,
+            "hits": hits,
+            "facets": facet_results,
+        }
+
     def close(self):
         """Gracefully close the gRPC channel, waiting for in-flight operations."""
         self._closing = True

@@ -5,14 +5,14 @@ import json
 SYMBOLS_SCHEMA = {
     "fields": [
         {"name": "id", "type": "STRING", "key": True},
-        {"name": "name", "type": "STRING", "searchable": True},
-        {"name": "qualified_name", "type": "STRING", "searchable": True},
+        {"name": "name", "type": "STRING", "searchable": True, "suggestable": True},
+        {"name": "qualified_name", "type": "STRING", "searchable": True, "suggestable": True},
         {"name": "signature", "type": "STRING", "searchable": True},
-        {"name": "kind", "type": "STRING", "filterable": True},
-        {"name": "visibility", "type": "STRING", "filterable": True},
+        {"name": "kind", "type": "STRING", "filterable": True, "facetable": True},
+        {"name": "visibility", "type": "STRING", "filterable": True, "facetable": True},
         {"name": "file_path", "type": "STRING", "searchable": True, "filterable": True},
-        {"name": "package", "type": "STRING", "searchable": True, "filterable": True},
-        {"name": "module", "type": "STRING", "filterable": True},
+        {"name": "package", "type": "STRING", "searchable": True, "filterable": True, "facetable": True},
+        {"name": "module", "type": "STRING", "filterable": True, "facetable": True},
         {"name": "parent_class", "type": "STRING", "filterable": True},
         {"name": "implements", "type": "STRING", "searchable": True},
         {"name": "extends_class", "type": "STRING", "searchable": True},
@@ -30,10 +30,10 @@ CHUNKS_SCHEMA_BM25 = {
         {"name": "id", "type": "STRING", "key": True},
         {"name": "content", "type": "STRING", "searchable": True},
         {"name": "file_path", "type": "STRING", "searchable": True, "filterable": True},
-        {"name": "symbol_name", "type": "STRING", "searchable": True},
-        {"name": "kind", "type": "STRING", "filterable": True},
-        {"name": "module", "type": "STRING", "filterable": True},
-        {"name": "language", "type": "STRING", "filterable": True},
+        {"name": "symbol_name", "type": "STRING", "searchable": True, "suggestable": True},
+        {"name": "kind", "type": "STRING", "filterable": True, "facetable": True},
+        {"name": "module", "type": "STRING", "filterable": True, "facetable": True},
+        {"name": "language", "type": "STRING", "filterable": True, "facetable": True},
         {"name": "enclosing_class", "type": "STRING", "searchable": True, "filterable": True},
         {"name": "enclosing_method", "type": "STRING", "filterable": True},
         {"name": "line_start", "type": "INT32"},
@@ -46,7 +46,7 @@ CHUNKS_SCHEMA_BM25 = {
 CHUNKS_SCHEMA_HYBRID = {
     "fields": [
         *CHUNKS_SCHEMA_BM25["fields"],
-        {"name": "embedding", "type": "VECTOR", "dimensions": 384},
+        {"name": "embedding", "type": "VECTOR", "dimension": 384},
     ]
 }
 
@@ -54,9 +54,9 @@ FILES_SCHEMA = {
     "fields": [
         {"name": "id", "type": "STRING", "key": True},
         {"name": "path", "type": "STRING", "searchable": True},
-        {"name": "filename", "type": "STRING", "searchable": True},
-        {"name": "extension", "type": "STRING", "filterable": True},
-        {"name": "module", "type": "STRING", "searchable": True, "filterable": True},
+        {"name": "filename", "type": "STRING", "searchable": True, "suggestable": True},
+        {"name": "extension", "type": "STRING", "filterable": True, "facetable": True},
+        {"name": "module", "type": "STRING", "searchable": True, "filterable": True, "facetable": True},
         {"name": "package", "type": "STRING", "searchable": True},
         {"name": "class_names", "type": "STRING", "searchable": True},
         {"name": "imports_summary", "type": "STRING", "searchable": True},

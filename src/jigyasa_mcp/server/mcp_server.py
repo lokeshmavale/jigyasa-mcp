@@ -543,6 +543,40 @@ def create_mcp_server(
                     "required": ["file_path"],
                 },
             ),
+            Tool(
+                name="jigyasa_autocomplete",
+                description=(
+                    "Get autocomplete suggestions for symbol names, file names, or code. "
+                    "Use when the agent is typing a partial name and wants typeahead suggestions. "
+                    "Sub-3ms FST-based completion."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "prefix": {
+                            "type": "string",
+                            "description": "Partial text to autocomplete",
+                        },
+                        "scope": {
+                            "type": "string",
+                            "enum": ["symbols", "files", "code"],
+                            "description": "What to autocomplete: symbols (classes/methods), files, or code chunks",
+                            "default": "symbols",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Max suggestions",
+                            "default": 10,
+                        },
+                        "fuzzy": {
+                            "type": "boolean",
+                            "description": "Enable typo-tolerant matching",
+                            "default": False,
+                        },
+                    },
+                    "required": ["prefix"],
+                },
+            ),
         ]
 
     @server.call_tool()
@@ -639,6 +673,8 @@ def create_mcp_server(
                     depth=validated.depth,
                 )
                 text = format_dependency_graph(graph)
+            elif name == "jigyasa_autocomplete":
+                text = _handle_autocomplete(client, arguments, cols)
             else:
                 text = f"Unknown tool: {name}"
             return [TextContent(type="text", text=truncate_response(text))]
@@ -672,9 +708,30 @@ def _handle_search_symbols(client: JigyasaClient, args: SearchSymbolsInput, cols
     if args.package_prefix:
         query += f" {args.package_prefix}"
 
-    result = client.query(cols["symbols"], text_query=query, filters=filters, top_k=args.limit)
-    result = rerank(result, args.query)
-    return _format_hits(result, max_results=args.limit, query=args.query)
+    result = client.query_with_facets(
+        cols["symbols"], text_query=query, filters=filters,
+        facets=["kind", "visibility", "package"], top_k=args.limit,
+    )
+    from jigyasa_mcp.grpc_client import SearchResult
+    search_result = SearchResult(
+        total_hits=result["total_hits"], hits=result["hits"],
+    )
+    search_result = rerank(search_result, args.query)
+
+    output = _format_hits(search_result, max_results=args.limit, query=args.query)
+
+    # Append facet summary if available
+    facets = result.get("facets", {})
+    if facets:
+        lines = ["\n--- Distribution ---"]
+        for facet_name, buckets in facets.items():
+            if buckets:
+                top = sorted(buckets.items(), key=lambda x: -x[1])[:5]
+                summary = ", ".join(f"{v}: {c}" for v, c in top)
+                lines.append(f"  {facet_name}: {summary}")
+        output += "\n".join(lines)
+
+    return output
 
 
 def _handle_search_code(
@@ -860,3 +917,47 @@ async def run_server(endpoint: str, repo_root: str, use_embeddings: bool):
             )
     finally:
         client.close()
+
+
+def _handle_autocomplete(client: JigyasaClient, arguments: dict, cols: dict) -> str:
+    """Handle jigyasa_autocomplete tool — FST-based typeahead suggestions."""
+    prefix = arguments.get("prefix", "")
+    scope = arguments.get("scope", "symbols")
+    limit = arguments.get("limit", 10)
+    fuzzy = arguments.get("fuzzy", False)
+
+    if not prefix:
+        return "ERROR: prefix is required"
+
+    # Map scope to collection + fields
+    scope_config = {
+        "symbols": (cols["symbols"], ["name", "qualified_name"]),
+        "files": (cols["files"], ["filename"]),
+        "code": (cols["chunks"], ["symbol_name"]),
+    }
+    if scope not in scope_config:
+        return f"ERROR: scope must be one of: {list(scope_config.keys())}"
+
+    collection, fields = scope_config[scope]
+
+    try:
+        suggestions = client.autocomplete(
+            collection=collection,
+            prefix=prefix,
+            fields=fields,
+            limit=limit,
+            fuzzy=fuzzy,
+        )
+    except ConnectionError as e:
+        return f"ERROR: {e}"
+
+    if not suggestions:
+        return f"No suggestions for '{prefix}' in {scope}"
+
+    lines = [f"Autocomplete for '{prefix}' ({scope}, {len(suggestions)} results):"]
+    for s in suggestions:
+        display = s.get("highlighted") or s.get("text", "")
+        field = s.get("field", "")
+        lines.append(f"  {display}  ({field})")
+
+    return "\n".join(lines)

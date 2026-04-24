@@ -80,10 +80,15 @@ def _find_visibility(node, profile: LanguageProfile) -> str:
     return "public"
 
 
-def _extract_imports_generic(source: str, profile: LanguageProfile) -> list[str]:
-    """Extract import paths using the language profile's regex."""
+def _extract_imports_generic(source: str, profile: LanguageProfile) -> tuple[list[str], list[str]]:
+    """Extract import paths using the language profile's regex.
+
+    Returns (full_paths, prefix_summaries).
+    full_paths: deduplicated full import strings
+    prefix_summaries: 3-segment prefixes for backward compatibility
+    """
     if not profile.import_pattern:
-        return []
+        return [], []
     imports = re.findall(profile.import_pattern, source, re.MULTILINE)
     # Flatten tuples from multi-group patterns
     flat = []
@@ -92,13 +97,21 @@ def _extract_imports_generic(source: str, profile: LanguageProfile) -> list[str]
             flat.extend(i for i in imp if i)
         else:
             flat.append(imp)
-    # Deduplicate and take first 3 segments
-    prefixes = set()
+    # Deduplicate full paths while preserving order
+    seen: set[str] = set()
+    full_paths: list[str] = []
     for imp in flat:
-        parts = re.split(r"[./:]", imp)
+        if imp not in seen:
+            seen.add(imp)
+            full_paths.append(imp)
+    # Build 3-segment prefixes for backward compat
+    prefixes = set()
+    for imp in full_paths:
+        parts = re.split(r"[./:]", imp.replace("*", "").rstrip("."))
         prefix = ".".join(parts[:min(3, len(parts))])
-        prefixes.add(prefix)
-    return sorted(prefixes)
+        if prefix:
+            prefixes.add(prefix)
+    return full_paths, sorted(prefixes)
 
 
 def _extract_package_generic(source: str, profile: LanguageProfile) -> str:
@@ -204,7 +217,7 @@ class GenericASTChunker:
         rel_path = os.path.relpath(file_path, repo_root).replace("\\", "/")
         module = _extract_module(file_path, repo_root)
         package = _extract_package_generic(source, self.profile)
-        imports = _extract_imports_generic(source, self.profile)
+        imports_full, imports_prefixes = _extract_imports_generic(source, self.profile)
 
         try:
             tree = self.parser.parse(source.encode("utf-8"))
@@ -213,7 +226,8 @@ class GenericASTChunker:
                 f"tree-sitter parse failed for {rel_path}: {e}"
             )
             return [], [], self._make_file_doc(
-                rel_path, file_path, module, package, imports,
+                rel_path, file_path, module, package,
+                imports_full, imports_prefixes,
                 source, commit_sha, [],
             )
 
@@ -228,7 +242,8 @@ class GenericASTChunker:
         )
 
         file_doc = self._make_file_doc(
-            rel_path, file_path, module, package, imports,
+            rel_path, file_path, module, package,
+            imports_full, imports_prefixes,
             source, commit_sha, class_names,
         )
         return symbols, chunks, file_doc
@@ -457,7 +472,8 @@ class GenericASTChunker:
         file_path: str,
         module: str,
         package: str,
-        imports: list[str],
+        imports_full: list[str],
+        imports_prefixes: list[str],
         source: str,
         commit_sha: str,
         class_names: list[str],
@@ -470,7 +486,8 @@ class GenericASTChunker:
             module=module,
             package=package,
             class_names=", ".join(class_names),
-            imports_summary=", ".join(imports),
+            imports_summary=", ".join(imports_prefixes),
+            imports_full=", ".join(imports_full),
             loc=len(source.split("\n")),
             last_commit_sha=commit_sha,
         )

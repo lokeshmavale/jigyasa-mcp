@@ -82,7 +82,8 @@ class FileDoc:
     module: str
     package: str
     class_names: str  # comma-separated
-    imports_summary: str  # comma-separated unique import packages
+    imports_summary: str  # comma-separated unique import packages (3-segment prefixes)
+    imports_full: str  # comma-separated full import paths (untruncated)
     loc: int
     last_commit_sha: str
 
@@ -108,15 +109,33 @@ def _extract_package(source: str) -> str:
     return match.group(1) if match else ""
 
 
-def _extract_imports(source: str) -> list[str]:
-    """Extract unique import package prefixes (first 3 segments)."""
-    imports = re.findall(r"^\s*import\s+(?:static\s+)?([\w.]+);", source, re.MULTILINE)
+def _extract_imports(source: str) -> tuple[list[str], list[str]]:
+    """Extract Java imports. Returns (full_paths, prefix_summaries).
+
+    full_paths: deduplicated full import paths (e.g., 'org.opensearch.common.settings.Setting.Property')
+    prefix_summaries: unique 3-segment prefixes for backward compatibility
+    Static imports are normalized to the owning type (drop the member name).
+    Wildcard imports are included as-is (e.g., 'java.util.*').
+    """
+    # Match both regular and wildcard imports
+    all_imports = re.findall(
+        r"^\s*import\s+(?:static\s+)?([\w.*]+);", source, re.MULTILINE,
+    )
+    full_paths: list[str] = []
     prefixes = set()
-    for imp in imports:
-        parts = imp.split(".")
+    for imp in all_imports:
+        full_paths.append(imp)
+        parts = imp.replace("*", "").rstrip(".").split(".")
         prefix = ".".join(parts[:min(3, len(parts))])
         prefixes.add(prefix)
-    return sorted(prefixes)
+    # Deduplicate full paths while preserving order
+    seen: set[str] = set()
+    unique_full: list[str] = []
+    for p in full_paths:
+        if p not in seen:
+            seen.add(p)
+            unique_full.append(p)
+    return unique_full, sorted(prefixes)
 
 
 def should_skip_file(file_path: str) -> bool:
@@ -258,6 +277,7 @@ class JavaChunker:
 
         # File-level document
         lines = source.split("\n")
+        imports_full, imports_prefixes = _extract_imports(source)
         file_doc = FileDoc(
             id=rel_path,
             path=rel_path,
@@ -266,7 +286,8 @@ class JavaChunker:
             module=module,
             package=package,
             class_names=", ".join(class_names),
-            imports_summary=", ".join(_extract_imports(source)),
+            imports_summary=", ".join(imports_prefixes),
+            imports_full=", ".join(imports_full),
             loc=len(lines),
             last_commit_sha=commit_sha,
         )
@@ -294,7 +315,11 @@ class JavaChunker:
         # Class symbol — with type references for dependency graph
         type_refs = _extract_type_references(node)
         # imports are file-level, captured from source
-        file_imports = ", ".join(_extract_imports(source)) if not parent_class else ""
+        if not parent_class:
+            file_imports_full, _ = _extract_imports(source)
+            file_imports = ", ".join(file_imports_full)
+        else:
+            file_imports = ""
 
         symbols.append(Symbol(
             id=f"{file_path}::{kind}::{qualified}",
@@ -585,6 +610,7 @@ class TextChunker:
             package="",
             class_names="",
             imports_summary="",
+            imports_full="",
             loc=len(lines),
             last_commit_sha=commit_sha,
         )

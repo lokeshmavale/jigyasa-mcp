@@ -60,10 +60,65 @@ class TestHelpers:
             import java.util.List;
             import static org.junit.Assert.assertEquals;
         """)
-        imports = _extract_imports(source)
-        assert "org.opensearch.cluster" in imports
-        assert "org.opensearch.action" in imports
-        assert "java.util.List" in imports
+        full, prefixes = _extract_imports(source)
+        # Full paths preserved
+        assert "org.opensearch.cluster.ClusterState" in full
+        assert "org.opensearch.action.ActionType" in full
+        assert "java.util.List" in full
+        assert "org.junit.Assert.assertEquals" in full
+        # Backward-compat prefixes still work
+        assert "org.opensearch.cluster" in prefixes
+        assert "org.opensearch.action" in prefixes
+        assert "java.util.List" in prefixes
+
+    def test_extract_imports_inner_class(self):
+        """Inner class imports (e.g., Setting.Property) must be preserved."""
+        source = textwrap.dedent("""\
+            import org.opensearch.common.settings.Setting;
+            import org.opensearch.common.settings.Setting.Property;
+        """)
+        full, prefixes = _extract_imports(source)
+        assert "org.opensearch.common.settings.Setting" in full
+        assert "org.opensearch.common.settings.Setting.Property" in full
+
+    def test_extract_imports_jdk_types(self):
+        """Standard library imports must not be silently dropped."""
+        source = textwrap.dedent("""\
+            import java.util.Collections;
+            import java.util.Map;
+            import java.util.concurrent.ConcurrentHashMap;
+        """)
+        full, _ = _extract_imports(source)
+        assert "java.util.Collections" in full
+        assert "java.util.Map" in full
+        assert "java.util.concurrent.ConcurrentHashMap" in full
+
+    def test_extract_imports_annotations(self):
+        """Annotation imports must be preserved."""
+        source = textwrap.dedent("""\
+            import org.opensearch.common.annotation.PublicApi;
+        """)
+        full, _ = _extract_imports(source)
+        assert "org.opensearch.common.annotation.PublicApi" in full
+
+    def test_extract_imports_wildcard(self):
+        """Wildcard imports should be included."""
+        source = textwrap.dedent("""\
+            import java.util.*;
+            import static org.junit.Assert.*;
+        """)
+        full, _ = _extract_imports(source)
+        assert "java.util.*" in full
+        assert "org.junit.Assert.*" in full
+
+    def test_extract_imports_deduplication(self):
+        """Duplicate imports should be deduplicated."""
+        source = textwrap.dedent("""\
+            import java.util.List;
+            import java.util.List;
+        """)
+        full, _ = _extract_imports(source)
+        assert full.count("java.util.List") == 1
 
     def test_estimate_tokens(self):
         assert _estimate_tokens("abcd") == 1
@@ -192,6 +247,37 @@ public class Big {{
         symbols, chunks, file_doc = chunker.parse_file(file_path, source, str(tmp_path))
         assert symbols == []
         assert file_doc.loc == 1  # empty string splits to ['']
+
+    def test_imports_full_in_file_doc(self, chunker, tmp_path):
+        """FileDoc.imports_full must contain untruncated import paths."""
+        source = textwrap.dedent("""\
+            package org.opensearch.cluster.service;
+
+            import org.opensearch.cluster.ClusterManagerMetrics;
+            import org.opensearch.common.settings.Setting;
+            import org.opensearch.common.settings.Setting.Property;
+            import org.opensearch.common.annotation.PublicApi;
+            import java.util.Collections;
+            import java.util.Map;
+
+            @PublicApi(since = "1.0")
+            public class ClusterService {
+                public void doWork() {}
+            }
+        """)
+        file_path = os.path.join(str(tmp_path), "ClusterService.java")
+        _, _, file_doc = chunker.parse_file(file_path, source, str(tmp_path))
+
+        full_imports = [i.strip() for i in file_doc.imports_full.split(",")]
+        assert "org.opensearch.cluster.ClusterManagerMetrics" in full_imports
+        assert "org.opensearch.common.settings.Setting" in full_imports
+        assert "org.opensearch.common.settings.Setting.Property" in full_imports
+        assert "org.opensearch.common.annotation.PublicApi" in full_imports
+        assert "java.util.Collections" in full_imports
+        assert "java.util.Map" in full_imports
+        # Prefixes should still work
+        prefix_imports = [i.strip() for i in file_doc.imports_summary.split(",")]
+        assert "org.opensearch.cluster" in prefix_imports
 
 
 # --- TextChunker ---

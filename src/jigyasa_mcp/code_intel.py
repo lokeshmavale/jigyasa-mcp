@@ -227,7 +227,7 @@ def dependency_graph(
     if not target_info:
         return {"error": f"File not found: {file_path}"}
 
-    imports_raw = target_info.get("imports_summary", "")
+    imports_raw = target_info.get("imports_full", "") or target_info.get("imports_summary", "")
     classes_raw = target_info.get("class_names", "")
 
     depends_on = [

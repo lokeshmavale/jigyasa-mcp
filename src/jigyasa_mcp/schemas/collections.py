@@ -60,6 +60,7 @@ FILES_SCHEMA = {
         {"name": "package", "type": "STRING", "searchable": True},
         {"name": "class_names", "type": "STRING", "searchable": True},
         {"name": "imports_summary", "type": "STRING", "searchable": True},
+        {"name": "imports_full", "type": "STRING", "searchable": True},
         {"name": "loc", "type": "INT32"},
         {"name": "last_commit_sha", "type": "STRING"},
     ]

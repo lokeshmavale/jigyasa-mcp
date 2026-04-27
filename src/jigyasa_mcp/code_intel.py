@@ -184,6 +184,98 @@ def find_references(
     return refs
 
 
+def _classify_import(
+    import_path: str,
+    symbols_by_class: dict[str, dict],
+) -> str:
+    """Classify an import into a dependency edge type.
+
+    Uses the target file's symbol data to determine the relationship:
+      - EXTENDS: this file extends the imported type
+      - IMPLEMENTS: this file implements the imported interface
+      - ANNOTATION: the import is used as an annotation
+      - IMPORT: generic import (default)
+    """
+    # Extract the simple class name from the import path
+    parts = import_path.split(".")
+    simple_name = parts[-1] if parts else import_path
+
+    # Check if any symbol in the current file extends/implements this
+    for _cls_name, sym_data in symbols_by_class.items():
+        extends = sym_data.get("extends_class", "")
+        implements = sym_data.get("implements", "")
+        annotations = sym_data.get("annotations", "")
+
+        if extends and simple_name in extends:
+            return "EXTENDS"
+        if implements and simple_name in implements:
+            return "IMPLEMENTS"
+        if annotations and simple_name in annotations:
+            return "ANNOTATION"
+
+    return "IMPORT"
+
+
+def _resolve_import_to_file(
+    client: JigyasaClient,
+    import_path: str,
+    files_collection: str,
+) -> str:
+    """Resolve an import path to an actual file path in the index.
+
+    E.g., 'org.opensearch.cluster.ClusterState' → 'server/src/.../ClusterState.java'
+    Uses exact TermFilter on package field + BM25 on class name for precision.
+    Returns the file path if found, empty string otherwise.
+    """
+    parts = import_path.split(".")
+    if not parts or not import_path.strip():
+        return ""
+    # The class name is usually the last segment (or second-to-last for inner classes)
+    class_name = parts[-1]
+    if class_name == "*":
+        return ""  # Can't resolve wildcard imports
+
+    # Strategy: use exact package filter + class name text query
+    # This is much more precise than BM25-only search
+    expected_package = ".".join(parts[:-1])
+
+    # Try exact package + class name match first
+    if expected_package:
+        result = client.query(
+            files_collection,
+            text_query=class_name,
+            filters=[{"field": "package", "value": expected_package}],
+            top_k=5,
+        )
+        for hit in result.hits:
+            src = hit.source
+            file_classes = src.get("class_names", "")
+            class_list = [c.strip() for c in file_classes.split(",")]
+            if class_name in class_list:
+                return src.get("path", "")
+
+    # Inner class fallback: org.opensearch.common.settings.Setting.Property
+    # → package=org.opensearch.common.settings, class=Setting
+    if len(parts) >= 3:
+        parent_name = parts[-2]
+        parent_package = ".".join(parts[:-2])
+        if parent_package:
+            result = client.query(
+                files_collection,
+                text_query=parent_name,
+                filters=[{"field": "package", "value": parent_package}],
+                top_k=5,
+            )
+            for hit in result.hits:
+                src = hit.source
+                file_classes = src.get("class_names", "")
+                class_list = [c.strip() for c in file_classes.split(",")]
+                if parent_name in class_list:
+                    return src.get("path", "")
+
+    return ""
+
+
 def dependency_graph(
     client: JigyasaClient,
     file_path: str,
@@ -198,31 +290,41 @@ def dependency_graph(
 
     Returns a dict with:
       - target: the queried file
-      - depends_on: files/packages this file imports
+      - depends_on: list of {import, type, file} dicts with typed edges
       - depended_by: files that reference types defined in this file
       - classes_defined: classes/interfaces/enums in this file
+      - completeness: "full" or "truncated"
     """
-    # Get file metadata
+    # Get file metadata — try exact path filter first, fall back to BM25
     file_result = client.query(
         files_collection,
-        text_query=file_path,
-        filters=[],
-        top_k=5,
+        text_query="",
+        filters=[{"field": "path", "value": file_path}],
+        top_k=1,
     )
 
     target_info = None
-    for hit in file_result.hits:
-        if hit.source.get("path", "") == file_path:
-            target_info = hit.source
-            break
+    if file_result.hits:
+        target_info = file_result.hits[0].source
 
     if not target_info:
-        # Try partial match
+        # Fallback: BM25 search for partial path match
+        file_result = client.query(
+            files_collection,
+            text_query=file_path,
+            filters=[],
+            top_k=5,
+        )
         for hit in file_result.hits:
-            if file_path in hit.source.get("path", ""):
+            if hit.source.get("path", "") == file_path:
                 target_info = hit.source
-                file_path = hit.source["path"]
                 break
+        if not target_info:
+            for hit in file_result.hits:
+                if file_path in hit.source.get("path", ""):
+                    target_info = hit.source
+                    file_path = hit.source["path"]
+                    break
 
     if not target_info:
         return {"error": f"File not found: {file_path}"}
@@ -230,12 +332,37 @@ def dependency_graph(
     imports_raw = target_info.get("imports_full", "") or target_info.get("imports_summary", "")
     classes_raw = target_info.get("class_names", "")
 
-    depends_on = [
+    import_list = [
         i.strip() for i in imports_raw.split(",") if i.strip()
     ]
     classes_defined = [
         c.strip() for c in classes_raw.split(",") if c.strip()
     ]
+
+    # Get symbols for this file to classify edge types
+    # Use exact TermFilter on file_path for precision (not BM25 text search)
+    symbols_by_class: dict[str, dict] = {}
+    if classes_defined:
+        sym_result = client.query(
+            symbols_collection,
+            text_query="",
+            filters=[{"field": "file_path", "value": file_path}],
+            top_k=50,
+        )
+        for hit in sym_result.hits:
+            src = hit.source
+            if src.get("kind", "") in ("class", "interface", "enum"):
+                symbols_by_class[src.get("name", "")] = src
+
+    # Build typed dependency edges
+    depends_on: list[dict] = []
+    for imp in import_list:
+        edge_type = _classify_import(imp, symbols_by_class)
+        resolved_file = _resolve_import_to_file(client, imp, files_collection)
+        dep = {"import": imp, "type": edge_type}
+        if resolved_file:
+            dep["file"] = resolved_file
+        depends_on.append(dep)
 
     # Find files that depend on this file's classes
     depended_by: list[dict] = []
@@ -273,7 +400,10 @@ def dependency_graph(
         "target": file_path,
         "classes_defined": classes_defined,
         "depends_on": depends_on,
+        "depends_on_count": len(depends_on),
         "depended_by": depended_by,
+        "depended_by_count": len(depended_by),
+        "completeness": "full",
     }
     if transitive_deps:
         result["transitive"] = transitive_deps
@@ -289,7 +419,7 @@ def format_implementations(
     refs: list[SymbolRef], symbol_name: str,
 ) -> str:
     if not refs:
-        return f"No implementations found for '{symbol_name}'."
+        return f"No implementations found for '{symbol_name}'. (0 results, completeness: full)"
     lines = [
         f"Found {len(refs)} implementation(s) of '{symbol_name}':",
     ]
@@ -298,6 +428,7 @@ def format_implementations(
             f"  [{ref.relationship}] {ref.qualified_name}"
             f"  ({ref.kind}, {ref.file_path}:{ref.line_start})"
         )
+    lines.append(f"\nTotal: {len(refs)}, completeness: full")
     return "\n".join(lines)
 
 
@@ -305,7 +436,7 @@ def format_references(
     refs: list[SymbolRef], symbol_name: str,
 ) -> str:
     if not refs:
-        return f"No references found for '{symbol_name}'."
+        return f"No references found for '{symbol_name}'. (0 results, completeness: full)"
     lines = [
         f"Found {len(refs)} reference(s) to '{symbol_name}':",
     ]
@@ -314,6 +445,7 @@ def format_references(
             f"  [{ref.relationship}] {ref.qualified_name}"
             f"  ({ref.kind}, {ref.file_path}:{ref.line_start})"
         )
+    lines.append(f"\nTotal: {len(refs)}, completeness: full")
     return "\n".join(lines)
 
 
@@ -328,16 +460,29 @@ def format_dependency_graph(graph: dict) -> str:
         lines.append(f"\nDefines: {', '.join(classes)}")
 
     deps = graph.get("depends_on", [])
+    dep_count = graph.get("depends_on_count", len(deps))
     if deps:
-        lines.append(f"\nDepends on ({len(deps)}):")
+        lines.append(f"\nDepends on ({dep_count}):")
         for d in deps:
-            lines.append(f"  → {d}")
+            if isinstance(d, dict):
+                edge_type = d.get("type", "IMPORT")
+                imp = d.get("import", "?")
+                resolved = d.get("file", "")
+                marker = f"[{edge_type}]"
+                if resolved:
+                    lines.append(f"  {marker} {imp} → {resolved}")
+                else:
+                    lines.append(f"  {marker} {imp}")
+            else:
+                # Backward compat: old-style string list
+                lines.append(f"  → {d}")
     else:
         lines.append("\nDepends on: (none)")
 
     dep_by = graph.get("depended_by", [])
+    dep_by_count = graph.get("depended_by_count", len(dep_by))
     if dep_by:
-        lines.append(f"\nDepended by ({len(dep_by)}):")
+        lines.append(f"\nDepended by ({dep_by_count}):")
         for d in dep_by:
             lines.append(f"  ← {d['file']}  (via {d['via']})")
     else:
@@ -351,5 +496,8 @@ def format_dependency_graph(graph: dict) -> str:
                 f"  {t['file']} → "
                 f"{t['further_depended_by']} further dependents"
             )
+
+    completeness = graph.get("completeness", "unknown")
+    lines.append(f"\nCompleteness: {completeness}")
 
     return "\n".join(lines)

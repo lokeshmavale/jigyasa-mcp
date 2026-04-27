@@ -177,7 +177,11 @@ def validate_path_within_root(file_path: str, repo_root: str) -> str:
 
 
 def truncate_response(text: str, max_chars: int = MAX_RESPONSE_CHARS) -> str:
-    """Truncate response text to fit LLM context window."""
+    """Truncate response text to fit LLM context window.
+
+    Appends a notice with the number of omitted characters so agents
+    know results are incomplete.
+    """
     if len(text) <= max_chars:
         return text
     truncated = text[:max_chars]
@@ -185,4 +189,9 @@ def truncate_response(text: str, max_chars: int = MAX_RESPONSE_CHARS) -> str:
     last_nl = truncated.rfind("\n")
     if last_nl > max_chars * 0.8:
         truncated = truncated[:last_nl]
-    return truncated + "\n\n... (response truncated, showing first results only)"
+    omitted = len(text) - len(truncated)
+    return (
+        truncated
+        + f"\n\n[TRUNCATED — {omitted} chars omitted. "
+        f"Use narrower filters or lower limit to get complete results.]"
+    )

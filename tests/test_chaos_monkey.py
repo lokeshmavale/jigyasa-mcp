@@ -533,7 +533,7 @@ class TestTruncationChaos:
     def test_one_over_limit(self):
         text = "x" * 15001
         result = truncate_response(text)
-        assert "truncated" in result
+        assert "TRUNCATED" in result
 
     def test_all_newlines(self):
         text = "\n" * 20000

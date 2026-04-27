@@ -17,6 +17,7 @@ from jigyasa_mcp.grpc_client import SearchHit, SearchResult
 class RankingConfig:
     """Configurable boost multipliers for search result reranking."""
     exact_name_boost: float = 2.0       # query exactly matches symbol name
+    file_path_boost: float = 1.5        # query matches file path or filename
     prod_over_test_boost: float = 1.3   # src/main/ ranked above src/test/
     test_penalty: float = 0.7           # test files ranked lower unless searching tests
     main_class_boost: float = 1.2       # file's primary class (not inner classes)
@@ -32,6 +33,26 @@ DEFAULT_RANKING_CONFIG = RankingConfig()
 def _is_test_file(file_path: str) -> bool:
     parts = file_path.replace("\\", "/").lower().split("/")
     return "test" in parts or "tests" in parts
+
+
+def _is_file_path_match(query: str, hit: SearchHit) -> bool:
+    """Check if query matches the file path or filename."""
+    query_lower = query.lower().strip()
+    source = hit.source
+    for field in ("file_path", "path", "filename"):
+        val = source.get(field, "")
+        if not val:
+            continue
+        val_lower = val.lower()
+        # Exact filename match (e.g., "ClusterService.java")
+        if val_lower.endswith(f"/{query_lower}") or val_lower == query_lower:
+            return True
+        # Filename without extension matches query
+        basename = val_lower.rsplit("/", 1)[-1]
+        name_no_ext = basename.rsplit(".", 1)[0]
+        if name_no_ext == query_lower:
+            return True
+    return False
 
 
 def _is_exact_name_match(query: str, hit: SearchHit) -> bool:
@@ -96,6 +117,10 @@ def rerank(
         # Exact name match boost
         if _is_exact_name_match(query, hit):
             score *= cfg.exact_name_boost
+
+        # File path match boost
+        if _is_file_path_match(query, hit):
+            score *= cfg.file_path_boost
 
         # Prod vs test
         if _is_test_file(file_path):

@@ -114,10 +114,11 @@ class TestTruncateResponse:
     def test_long_text_truncated(self):
         text = "x\n" * 20000
         result = truncate_response(text, max_chars=100)
-        assert len(result) < 200
-        assert "truncated" in result
+        assert len(result) < 300
+        assert "TRUNCATED" in result
+        assert "chars omitted" in result
 
     def test_truncates_at_newline(self):
         text = "line1\nline2\nline3\nline4\n" * 1000
         result = truncate_response(text, max_chars=50)
-        assert result.endswith("... (response truncated, showing first results only)")
+        assert "[TRUNCATED" in result

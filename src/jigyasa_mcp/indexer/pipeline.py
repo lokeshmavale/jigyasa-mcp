@@ -131,6 +131,7 @@ class IndexState:
     total_chunks: int = 0
     total_files: int = 0
     use_embeddings: bool = False
+    parse_failures: list[str] = field(default_factory=list)  # files that failed AST parse
     file_checksums: dict[str, tuple[float, int]] = field(default_factory=dict)
     # mtime, size pairs
 
@@ -182,6 +183,7 @@ class IndexStats:
     chunks_indexed: int = 0
     embeddings_generated: int = 0
     elapsed_seconds: float = 0.0
+    parse_failures: list[str] = field(default_factory=list)  # files that failed AST parse
     errors: list[str] = field(default_factory=list)
 
 
@@ -328,6 +330,7 @@ def _file_to_doc(fdoc: FileDoc) -> dict:
         "package": fdoc.package,
         "class_names": fdoc.class_names,
         "imports_summary": fdoc.imports_summary,
+        "imports_full": fdoc.imports_full,
         "loc": fdoc.loc,
         "last_commit_sha": fdoc.last_commit_sha,
     }
@@ -455,7 +458,7 @@ class Indexer:
                 chunk_batch.extend(chunks)
             else:
                 result = self._try_ast_parse(
-                    abs_path, source, head_sha,
+                    abs_path, source, head_sha, stats,
                 )
                 if result is not None:
                     symbols, chunks, file_doc = result
@@ -645,7 +648,7 @@ class Indexer:
                 chunk_batch.extend(chunks)
             else:
                 result = self._try_ast_parse(
-                    abs_path, source, head_sha,
+                    abs_path, source, head_sha, stats,
                 )
                 if result is not None:
                     symbols, chunks, file_doc = result
@@ -713,11 +716,13 @@ class Indexer:
         abs_path: str,
         source: str,
         commit_sha: str,
+        stats: IndexStats | None = None,
     ) -> tuple[list[Symbol], list[Chunk], FileDoc] | None:
         """Try to parse a file with GenericASTChunker via the language registry.
 
         Returns (symbols, chunks, file_doc) if a grammar is available,
         or None to fall back to TextChunker.
+        Records parse failures in stats if provided.
         """
         parser, profile = self.lang_registry.get_parser(abs_path)
         if parser is None or profile is None:
@@ -733,6 +738,8 @@ class Indexer:
                 f"AST parse failed for {rel} ({profile.name}), "
                 f"falling back to text chunker: {e}"
             )
+            if stats is not None:
+                stats.parse_failures.append(f"{rel} ({profile.name}): {e}")
             return None
 
     def _auto_detect_and_install_grammars(

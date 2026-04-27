@@ -490,6 +490,12 @@ def create_mcp_server(
                                 "implementations of"
                             ),
                         },
+                        "format": {
+                            "type": "string",
+                            "enum": ["text", "json"],
+                            "description": "Output format: 'text' (default) or 'json' for structured output",
+                            "default": "text",
+                        },
                     },
                     "required": ["symbol_name"],
                 },
@@ -510,6 +516,12 @@ def create_mcp_server(
                             "description": (
                                 "Type/class name to find references to"
                             ),
+                        },
+                        "format": {
+                            "type": "string",
+                            "enum": ["text", "json"],
+                            "description": "Output format: 'text' (default) or 'json' for structured output",
+                            "default": "text",
                         },
                     },
                     "required": ["symbol_name"],
@@ -538,6 +550,12 @@ def create_mcp_server(
                                 "2=transitive (default: 1)"
                             ),
                             "default": 1,
+                        },
+                        "format": {
+                            "type": "string",
+                            "enum": ["text", "json"],
+                            "description": "Output format: 'text' (default) or 'json' for structured output",
+                            "default": "text",
                         },
                     },
                     "required": ["file_path"],
@@ -577,11 +595,27 @@ def create_mcp_server(
                     "required": ["prefix"],
                 },
             ),
+            Tool(
+                name="jigyasa_get_started",
+                description=(
+                    "Get guidance on how to use Jigyasa tools effectively. "
+                    "Call this FIRST before any other search to learn query syntax, "
+                    "tool selection strategies, and avoid common anti-patterns. "
+                    "Returns BAD/GOOD query examples and recommended workflows."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {},
+                },
+            ),
         ]
 
     @server.call_tool()
     async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         try:
+            # Extract format option before validation (not part of pydantic models)
+            output_format = arguments.pop("format", "text")
+
             # Resolve repo + namespaced collections once per call
             resolved_root, _, cols = _resolve_repo(repo_root)
 
@@ -654,17 +688,55 @@ def create_mcp_server(
                 refs = find_implementations(
                     client, validated.symbol_name, cols["symbols"],
                 )
-                text = format_implementations(
-                    refs, validated.symbol_name,
-                )
+                if output_format == "json":
+                    text = json.dumps({
+                        "symbol": validated.symbol_name,
+                        "total": len(refs),
+                        "completeness": "full",
+                        "implementations": [
+                            {
+                                "name": r.name,
+                                "qualified_name": r.qualified_name,
+                                "kind": r.kind,
+                                "file_path": r.file_path,
+                                "line_start": r.line_start,
+                                "line_end": r.line_end,
+                                "relationship": r.relationship,
+                            }
+                            for r in refs
+                        ],
+                    }, indent=2)
+                else:
+                    text = format_implementations(
+                        refs, validated.symbol_name,
+                    )
             elif name == "jigyasa_find_references":
                 validated = FindReferencesInput(**arguments)
                 refs = find_references(
                     client, validated.symbol_name, cols["symbols"],
                 )
-                text = format_references(
-                    refs, validated.symbol_name,
-                )
+                if output_format == "json":
+                    text = json.dumps({
+                        "symbol": validated.symbol_name,
+                        "total": len(refs),
+                        "completeness": "full",
+                        "references": [
+                            {
+                                "name": r.name,
+                                "qualified_name": r.qualified_name,
+                                "kind": r.kind,
+                                "file_path": r.file_path,
+                                "line_start": r.line_start,
+                                "line_end": r.line_end,
+                                "relationship": r.relationship,
+                            }
+                            for r in refs
+                        ],
+                    }, indent=2)
+                else:
+                    text = format_references(
+                        refs, validated.symbol_name,
+                    )
             elif name == "jigyasa_dependency_graph":
                 validated = DependencyGraphInput(**arguments)
                 graph = dependency_graph(
@@ -672,11 +744,20 @@ def create_mcp_server(
                     cols["files"], cols["symbols"],
                     depth=validated.depth,
                 )
-                text = format_dependency_graph(graph)
+                if output_format == "json":
+                    text = json.dumps(graph, indent=2)
+                else:
+                    text = format_dependency_graph(graph)
             elif name == "jigyasa_autocomplete":
                 text = _handle_autocomplete(client, arguments, cols)
+            elif name == "jigyasa_get_started":
+                text = _handle_get_started()
             else:
                 text = f"Unknown tool: {name}"
+            # Don't truncate JSON output — it would produce invalid JSON.
+            # For JSON, the caller controls size via limit params.
+            if output_format == "json":
+                return [TextContent(type="text", text=text)]
             return [TextContent(type="text", text=truncate_response(text))]
         except ValidationError as e:
             return [TextContent(type="text", text=f"VALIDATION ERROR: {e}")]
@@ -835,7 +916,7 @@ def _handle_reindex(args: ReindexInput, repo_root: str, endpoint: str, use_embed
     else:
         stats = indexer.incremental_index()
 
-    return (
+    result = (
         f"Reindex ({args.mode}) complete:\n"
         f"  Files indexed: {stats.files_indexed}\n"
         f"  Files deleted: {stats.files_deleted}\n"
@@ -843,8 +924,14 @@ def _handle_reindex(args: ReindexInput, repo_root: str, endpoint: str, use_embed
         f"  Chunks: {stats.chunks_indexed}\n"
         f"  Embeddings: {stats.embeddings_generated}\n"
         f"  Time: {stats.elapsed_seconds:.1f}s\n"
-        f"  Errors: {len(stats.errors)}"
+        f"  Errors: {len(stats.errors)}\n"
+        f"  Parse failures: {len(stats.parse_failures)}"
     )
+    if stats.parse_failures:
+        result += "\n  Failed files:\n"
+        for pf in stats.parse_failures[:20]:
+            result += f"    - {pf}\n"
+    return result
 
 
 
@@ -961,3 +1048,50 @@ def _handle_autocomplete(client: JigyasaClient, arguments: dict, cols: dict) -> 
         lines.append(f"  {display}  ({field})")
 
     return "\n".join(lines)
+
+
+def _handle_get_started() -> str:
+    """Return guidance on how to use Jigyasa tools effectively."""
+    return """\
+# Jigyasa MCP — Quick Start Guide
+
+## Tool Selection Strategy
+
+| Goal | Best Tool | Example |
+|------|-----------|---------|
+| Find a class/method by name | `search_symbols` | query: "ClusterService", kind: ["class"] |
+| Find code that does X | `search_code` | query: "retry backoff", module_path: "server" |
+| Find a file by path/name | `search_files` | query: "ClusterService", extension: "java" |
+| What implements interface X? | `find_implementations` | symbol_name: "ActionFilter" |
+| Who uses class X? | `find_references` | symbol_name: "ClusterState" |
+| What does file X depend on? | `dependency_graph` | file_path: "server/src/.../ClusterService.java" |
+| See code at a location | `get_context` | file_path + line_start + line_end |
+| How did file X change? | `file_history` | file_path: "server/src/.../ClusterService.java" |
+| Find commits about topic | `search_commits` | query: "fix shard allocation" |
+| Autocomplete a partial name | `autocomplete` | prefix: "Cluster", scope: "symbols" |
+
+## Query Syntax (BM25 keyword search)
+
+### BAD queries (natural language — low recall):
+- "how does shard allocation work"
+- "find the retry logic implementation"
+- "what class handles cluster state"
+
+### GOOD queries (keywords + filters — high recall):
+- query: "ShardAllocation", kind: ["class"]
+- query: "retry backoff", enclosing_class: "TransportAction"
+- query: "ClusterState", kind: ["class", "interface"]
+
+## Key Tips
+
+1. **Use `search_symbols` for precise lookups** — it searches names, signatures, packages.
+   Use `search_code` for concept/pattern search across code bodies.
+2. **Use filters** — `kind`, `visibility`, `module_path`, `file_types` dramatically improve precision.
+3. **Use `dependency_graph` for structural questions** — it returns typed edges
+   (EXTENDS, IMPLEMENTS, ANNOTATION, IMPORT) and resolves imports to file paths.
+4. **Use `format: "json"` on `find_implementations`, `find_references`, `dependency_graph`**
+   for structured output your code can parse directly.
+5. **All responses include completeness metadata** — check for "completeness: full" vs
+   "[TRUNCATED]" to know if you have all results.
+6. **Parallelize** — search_symbols + search_code + search_files can run in parallel.
+"""
